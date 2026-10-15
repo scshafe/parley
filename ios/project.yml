@@ -1,0 +1,77 @@
+# The Xcode project is generated from this spec by XcodeGen (version pinned in
+# .github/workflows/ci.yml); the .xcodeproj is not committed.
+#   xcodegen generate --spec ios/project.yml
+name: Parley
+options:
+  bundleIdPrefix: com.scshafe
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+packages:
+  ParleyKit:
+    path: ParleyKit
+targets:
+  Parley:
+    type: application
+    platform: iOS
+    sources:
+      - path: Parley
+    dependencies:
+      - package: ParleyKit
+    info:
+      path: Parley/Info.plist
+      properties:
+        CFBundleDisplayName: Parley
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        UIBackgroundModes: [audio]
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        NSAppTransportSecurity:
+          # The relay is https on the tailnet; plain http only for a dev relay
+          # on this machine (the simulator) or the local network.
+          NSAllowsLocalNetworking: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.scshafe.parley
+        TARGETED_DEVICE_FAMILY: "1"
+        ENABLE_PREVIEWS: YES
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: ""
+  ParleyUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: ParleyUITests
+    dependencies:
+      - target: Parley
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.scshafe.parley.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: Parley
+schemes:
+  Parley:
+    build:
+      targets:
+        Parley: all
+        ParleyUITests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      gatherCoverageData: false
+      targets:
+        - name: ParleyUITests
+      environmentVariables:
+        PARLEY_RELAY_URL: http://127.0.0.1:8765
+        PARLEY_DEV_TOKEN: parley-dev
