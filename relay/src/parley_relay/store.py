@@ -1,0 +1,239 @@
+"""The relay's record: conversations, turns and their events, in SQLite (WAL);
+each turn's audio and timings as files beside it."""
+
+from __future__ import annotations
+
+import json
+import secrets
+import sqlite3
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS conversations (
+    id TEXT PRIMARY KEY,
+    title TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS turns (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id),
+    seq INTEGER NOT NULL,
+    client_turn_id TEXT NOT NULL,
+    user_text TEXT NOT NULL,
+    state TEXT NOT NULL,
+    reply_raw TEXT,
+    reply_text TEXT,
+    attachment TEXT,
+    cleanup_json TEXT,
+    style_version TEXT,
+    jobs_json TEXT,
+    audio_duration_ms INTEGER,
+    timings_exact INTEGER,
+    error_code TEXT,
+    error_detail TEXT,
+    pushed INTEGER NOT NULL DEFAULT 0,
+    audio_deleted INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    ready_at TEXT,
+    UNIQUE (conversation_id, client_turn_id),
+    UNIQUE (conversation_id, seq)
+);
+CREATE TABLE IF NOT EXISTS speech_jobs (
+    job_id TEXT PRIMARY KEY,
+    turn_id TEXT NOT NULL REFERENCES turns(id),
+    job_index INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    data_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS events_by_conversation ON events (conversation_id, id);
+CREATE INDEX IF NOT EXISTS turns_by_state ON turns (state);
+"""
+
+ACTIVE_STATES = ("thinking", "speaking")
+TERMINAL_STATES = ("ready", "failed")
+
+
+def now_iso() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def new_id(prefix: str) -> str:
+    return f"{prefix}_{secrets.token_hex(8)}"
+
+
+class ConflictError(Exception):
+    pass
+
+
+class Store:
+    def __init__(self, data_dir: Path) -> None:
+        self.data_dir = Path(data_dir)
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        (self.data_dir / "turns").mkdir(exist_ok=True)
+        self._db = sqlite3.connect(self.data_dir / "relay.sqlite3", check_same_thread=False, isolation_level=None)
+        self._db.row_factory = sqlite3.Row
+        self._db.execute("PRAGMA journal_mode=WAL")
+        self._db.execute("PRAGMA foreign_keys=ON")
+        self._db.execute("PRAGMA busy_timeout=5000")
+        self._db.executescript(SCHEMA)
+        self._lock = threading.RLock()
+
+    def close(self) -> None:
+        self._db.close()
+
+    @contextmanager
+    def _tx(self) -> Iterator[sqlite3.Connection]:
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                yield self._db
+            except BaseException:
+                self._db.execute("ROLLBACK")
+                raise
+            self._db.execute("COMMIT")
+
+    # --- files ---------------------------------------------------------------------------
+
+    def turn_dir(self, turn_id: str) -> Path:
+        return self.data_dir / "turns" / turn_id
+
+    # --- conversations ----------------------------------------------------------------------
+
+    def create_conversation(self, title: str | None) -> dict:
+        cid, ts = new_id("c"), now_iso()
+        with self._tx() as db:
+            db.execute("INSERT INTO conversations VALUES (?, ?, ?, ?)", (cid, title, ts, ts))
+        return self.get_conversation(cid)  # type: ignore[return-value]
+
+    def get_conversation(self, cid: str) -> dict | None:
+        with self._lock:
+            row = self._db.execute("SELECT * FROM conversations WHERE id = ?", (cid,)).fetchone()
+            if row is None:
+                return None
+            conv = dict(row)
+            stats = self._db.execute(
+                "SELECT COUNT(*) AS n FROM turns WHERE conversation_id = ?", (cid,)
+            ).fetchone()
+            last = self._db.execute(
+                "SELECT * FROM turns WHERE conversation_id = ? ORDER BY seq DESC LIMIT 1", (cid,)
+            ).fetchone()
+            ev = self._db.execute(
+                "SELECT COALESCE(MAX(id), 0) AS m FROM events WHERE conversation_id = ?", (cid,)
+            ).fetchone()
+        conv["turn_count"] = stats["n"]
+        conv["last_turn"] = dict(last) if last else None
+        conv["last_event_id"] = ev["m"]
+        return conv
+
+    def list_conversations(self) -> list[dict]:
+        with self._lock:
+            ids = [r["id"] for r in self._db.execute("SELECT id FROM conversations ORDER BY updated_at DESC, id")]
+        return [c for c in (self.get_conversation(i) for i in ids) if c]
+
+    # --- turns ------------------------------------------------------------------------------
+
+    def add_turn(self, cid: str, client_turn_id: str, text: str) -> tuple[dict, bool]:
+        """Add a user turn; a retry with the same ``client_turn_id`` and text
+        answers the existing turn (``created`` is False)."""
+        with self._tx() as db:
+            row = db.execute(
+                "SELECT * FROM turns WHERE conversation_id = ? AND client_turn_id = ?", (cid, client_turn_id)
+            ).fetchone()
+            if row is not None:
+                if row["user_text"] != text:
+                    raise ConflictError("client_turn_id reused with a different text")
+                return dict(row), False
+            seq = db.execute(
+                "SELECT COALESCE(MAX(seq), 0) + 1 AS s FROM turns WHERE conversation_id = ?", (cid,)
+            ).fetchone()["s"]
+            tid, ts = new_id("t"), now_iso()
+            db.execute(
+                "INSERT INTO turns (id, conversation_id, seq, client_turn_id, user_text, state, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, 'thinking', ?, ?)",
+                (tid, cid, seq, client_turn_id, text, ts, ts),
+            )
+            db.execute(
+                "UPDATE conversations SET updated_at = ?, title = COALESCE(title, ?) WHERE id = ?",
+                (ts, _title_from(text), cid),
+            )
+            row = db.execute("SELECT * FROM turns WHERE id = ?", (tid,)).fetchone()
+        return dict(row), True
+
+    def get_turn(self, tid: str) -> dict | None:
+        with self._lock:
+            row = self._db.execute("SELECT * FROM turns WHERE id = ?", (tid,)).fetchone()
+        return dict(row) if row else None
+
+    def turns_of(self, cid: str) -> list[dict]:
+        with self._lock:
+            rows = self._db.execute("SELECT * FROM turns WHERE conversation_id = ? ORDER BY seq", (cid,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_turn(self, tid: str, **fields: Any) -> dict:
+        fields["updated_at"] = now_iso()
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        with self._tx() as db:
+            db.execute(f"UPDATE turns SET {cols} WHERE id = ?", (*fields.values(), tid))  # noqa: S608 - fixed column names
+            row = db.execute("SELECT * FROM turns WHERE id = ?", (tid,)).fetchone()
+            db.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (fields["updated_at"], row["conversation_id"]))
+        return dict(row)
+
+    def unfinished_turns(self) -> list[dict]:
+        """Turns a restart must resume: still working, or ready but not yet pushed."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM turns WHERE state IN ('thinking', 'speaking') OR (state = 'ready' AND pushed = 0)"
+                " ORDER BY created_at, seq"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def record_job(self, job_id: str, tid: str, index: int) -> None:
+        with self._tx() as db:
+            db.execute("INSERT OR IGNORE INTO speech_jobs VALUES (?, ?, ?)", (job_id, tid, index))
+
+    def turn_for_job(self, job_id: str) -> str | None:
+        with self._lock:
+            row = self._db.execute("SELECT turn_id FROM speech_jobs WHERE job_id = ?", (job_id,)).fetchone()
+        return row["turn_id"] if row else None
+
+    def expired_audio(self, days: int) -> list[dict]:
+        cutoff = (datetime.now(UTC) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM turns WHERE state = 'ready' AND audio_deleted = 0 AND ready_at < ?", (cutoff,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    # --- events -----------------------------------------------------------------------------
+
+    def add_event(self, cid: str, type_: str, data: dict) -> int:
+        with self._tx() as db:
+            cur = db.execute(
+                "INSERT INTO events (conversation_id, type, data_json, created_at) VALUES (?, ?, ?, ?)",
+                (cid, type_, json.dumps(data, separators=(",", ":")), now_iso()),
+            )
+            return int(cur.lastrowid or 0)
+
+    def events_after(self, cid: str, after: int, limit: int = 200) -> list[dict]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM events WHERE conversation_id = ? AND id > ? ORDER BY id LIMIT ?", (cid, after, limit)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def _title_from(text: str) -> str:
+    line = " ".join(text.split())
+    return line if len(line) <= 60 else line[:57].rstrip() + "…"
