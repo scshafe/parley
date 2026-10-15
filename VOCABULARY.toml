@@ -11,3 +11,45 @@ schema = 1
 # """
 # refs = ["docs/design.md#managed-section"] # optional: repo-relative paths, #anchor optional; must exist
 # aliases = ["marker block"]                # optional: search words (not slugs, never another term's slug)
+
+[[term]]
+slug = "turn"
+title = "Turn"
+definition = "One exchange in a conversation: the user's text and the agent's spoken reply. A turn moves thinking (the agent is answering), speaking (voice-lab is rendering), ready (audio and timings can be fetched) or failed. It is created once per client_turn_id, so a retried send is safe. Not a live call: speech is made after the reply is complete."
+refs = ["docs/DESIGN.md#a-turn-step-by-step"]
+
+[[term]]
+slug = "spoken-text"
+title = "Spoken text"
+definition = "The reply as it is both shown and spoken: the agent's reply after the relay's cleanup (markdown stripped, URLs as 'a link', code and the attachment block split off). voice-lab speaks exactly this text and the app shows exactly it, so follow-along offsets index it directly. Not the agent's raw reply, which the relay keeps beside it."
+refs = ["docs/DESIGN.md#answers-written-for-speech-the-style-rules"]
+
+[[term]]
+slug = "attachment"
+title = "Attachment"
+definition = "The part of a reply that needs a screen (a link, code, a list): written by the agent inside an <attachment> block, or collected by the relay's cleanup, and shown below the reply. Never spoken."
+refs = ["docs/DESIGN.md#answers-written-for-speech-the-style-rules"]
+
+[[term]]
+slug = "follow-along-timings"
+title = "Follow-along timings"
+definition = "timings.json (parley.timings/v1): for a ready turn, each sentence's and word's half-open range of Unicode scalars in the spoken text and its start and end in the reply's audio. Sentence times are exact from voice-lab's segment durations; word times are estimated in P1 and aligned in P3, in the same format."
+refs = ["docs/DESIGN.md#follow-along-highlighting"]
+
+[[term]]
+slug = "speech-job"
+title = "Speech job"
+definition = "One voice-lab speech request (POST /api/v1/speech) for up to 2,000 characters of a turn's spoken text, with idempotency key turn-<turn>-<n>. A longer reply is cut at sentence boundaries into several jobs whose audio is joined. One segment per sentence."
+refs = ["docs/DESIGN.md#a-turn-step-by-step"]
+
+[[term]]
+slug = "agent-adapter"
+title = "Agent adapter"
+definition = "The relay's one interface to the agent: send_turn(conversation, text) returns the reply text. OpenClaw's /v1/responses is the first adapter; a fake one answers in --dev and tests. The app never talks to the agent."
+refs = ["docs/DESIGN.md#not-a-fork-of-openclaw-recommended"]
+
+[[term]]
+slug = "dev-relay"
+title = "Dev relay"
+definition = "parley-relay --dev: the relay with the fake agent and the fake voice-lab (synthetic tones, never speech) in-process, on 127.0.0.1 with the public placeholder token parley-dev. It runs the whole turn flow without the network and is what CI's UI tests drive."
+refs = ["relay/README.md#run-it-locally-dev-mode"]
