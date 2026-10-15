@@ -6,3 +6,8 @@ DerivedData/
 xcuserdata/
 .DS_Store
 .parley-dev/
+ios/Parley.xcodeproj/
+ios/Parley/Info.plist
+ios/ParleyKit/.build/
+ios/ParleyKit/.swiftpm/
+ios/build/
