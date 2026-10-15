@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# The repository's one verify command (dev.toml [verify]): shell syntax, then
+# the Python tests. The iOS app is built and tested on macOS (docs/DESIGN.md).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+mapfile -t scripts < <(git ls-files --cached --others --exclude-standard -- 'scripts/*')
+for script in "${scripts[@]}"; do
+  bash -n "$script"
+done
+
+python3 -B -m unittest discover -s tests -t . -v 2>&1 | tail -n 3
