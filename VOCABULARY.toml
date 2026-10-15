@@ -1,0 +1,13 @@
+# Project vocabulary: the central concepts of this project, defined once so they can be
+# referenced without ambiguity. Refer to a term as `<project-id>:<slug>` (project-id is
+# dev.toml [project] id). Add one with `dev vocab add`; `dev check` (BASE-09) validates this file.
+schema = 1
+
+# [[term]]
+# slug = "managed-section"                  # lowercase words joined by `-`; at most 48 chars; unique
+# title = "Managed section"                 # one line
+# definition = """
+# Plain text; may span lines. Say what the concept is and what it is not.
+# """
+# refs = ["docs/design.md#managed-section"] # optional: repo-relative paths, #anchor optional; must exist
+# aliases = ["marker block"]                # optional: search words (not slugs, never another term's slug)
