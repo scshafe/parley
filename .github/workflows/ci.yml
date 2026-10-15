@@ -39,3 +39,20 @@ jobs:
       - name: Verify (dev.toml [verify] command)
         run: |
           ./scripts/verify-linux
+
+  # The iOS app (ios/). NATIVE-01: macos-26 (Xcode 26). ParleyKit, the app's
+  # logic as a Swift package, is unit tested with `swift test`.
+  ios:
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Select Xcode 26.6
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.6.app
+          xcodebuild -version
+      - name: ParleyKit unit tests
+        run: swift test --package-path ios/ParleyKit
