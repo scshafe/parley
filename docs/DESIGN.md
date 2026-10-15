@@ -1,7 +1,8 @@
 # Parley: design
 
 Design, 2026-10-15. Status: **accepted** (owner, 2026-10-15: every
-recommendation below). The brief is [brief.md](brief.md). Nothing is built yet.
+recommendation below). The brief is [brief.md](brief.md). P1 is built (2026-10-15): see
+[P1 build decisions](#p1-build-decisions).
 
 ## The shape
 
@@ -158,10 +159,81 @@ Mini's gateway, `openclaw.<tailnet>`, which is reachable today.
 | Phase | What | Gate |
 | --- | --- | --- |
 | P0 | This design, the decisions below, and the project set up: repository, `agent-parley`, picker, publication. | Done 2026-10-15. |
-| P1 | The relay pipeline with fakes. The app: conversations, composer, reader-player with estimated word timings, polling instead of push. | `[verify]` green; the app in the simulator against a stub relay. |
+| P1 | The relay pipeline with fakes. The app: conversations, composer, reader-player with estimated word timings, polling instead of push. | Done 2026-10-15: `[verify]` green; CI's UI tests run the app in the simulator against `parley-relay --dev`. |
 | P2 | Real integrations: the OpenClaw adapter, the voice-lab caller and webhook, APNs push, the Pocket ID sign-in, the relay deployed. Owner steps: register the voice-lab caller and the Pocket ID clients, place the APNs key, enable OpenClaw's HTTP endpoint. | One real turn on the phone: a notification, the owner's voice, highlighting in sync. |
 | P3 | Forced alignment for word timings, plus the voice-lab segment-range change (a voice-lab PR by its agent). | Highlight drift under 100 ms on 20 sample replies. |
 | P4 | Play from the first sentence (voice-lab segment SSE). Voice input with on-device speech recognition. Conversation search. | |
+
+## P1 build decisions
+
+Details the P1 build settled (2026-10-15). Each can change; the code is the
+reference.
+
+**The relay**
+
+- **Stack.** Starlette, uvicorn and httpx on Python 3.12 (`relay/.python-version`), locked by `uv.lock`; SQLite in WAL mode through the standard library. `parley-relay --dev` runs everything locally (below).
+- **API.** As in the relay's [README](../relay/README.md#api). Errors are `{"error": {"code", "detail"}}`. A turn retry with the same `client_turn_id` and text answers `200` with the same turn; another text answers `409 client_turn_conflict`.
+- **Events.** One SSE stream per conversation. Each `turn.updated` event carries the whole turn. Events are stored, so `Last-Event-ID` (or `?after=`) resumes a stream. The relay closes a stream after 10 minutes, and the app reconnects. When the stream is down, the app polls while a turn is unfinished.
+- **Auth for P1.** One static bearer token from `PARLEY_TOKEN_FILE`. The relay refuses to start without it, except in `--dev`, which uses the public placeholder `parley-dev` and listens on `127.0.0.1`.
+- **Pipeline details.**
+  - Speech requests use the idempotency key `turn-<turn>-<n>` and the `client_ref` `<conversation>/<turn>`, plus `/<n>` when there are several jobs.
+  - The webhook wakes the turn. A status poll every 15 seconds is the backstop. A turn gives up after 30 minutes.
+  - Retryable errors (`gpu_busy`, `queue_full`, `429`, network errors, a busy agent) are retried 5 times with exponential backoff, and `Retry-After` is honoured.
+  - The agent is called once at a time per conversation, in turn order.
+  - The agent call is the one step that is not idempotent: a relay that restarts during it asks the agent again. The reply is stored only once it has arrived.
+- **Webhook.** A webhook for an unknown job answers `410`, so voice-lab stops retrying. One that beats the relay's own record of the job finds the turn through its `client_ref`.
+- **Audio.** The relay serves WAV (24 kHz, mono, 16-bit), as voice-lab makes it, with `Range`. A 30-second reply is about 1.4 MB. There is no AAC transcode in P1, because the relay has no ffmpeg. A multi-job reply is joined into one file.
+- **Style and cleanup.**
+  - The style instructions live in `relay/src/parley_relay/prompts/style-v1.md`. Each turn records its `style_version`.
+  - The attachment block is written `<attachment>…</attachment>`.
+  - Links that the cleanup removes from the spoken text are listed in the attachment, under "Links:".
+  - Every cleanup change is returned with the turn (`cleanup`).
+- **voice-lab's sentence rule, where SPEECH_API.md §7 leaves room** (`sentences.py`):
+  - A fragment under 12 characters is measured as the stripped text built up so far.
+  - A short fragment at the very end, with no next sentence, is rendered on its own.
+  - The one-pass length limit depends on the voice release's reference clip, which the relay cannot see. It is a setting, `PARLEY_MAX_SENTENCE_CHARS`, unset by default.
+  - When the split does not give one sentence per segment, the job's text becomes one timed span and `exact_sentences` is `false`. voice-lab#78's `text_start` and `text_end` replace the rule inside `segment_ranges()`.
+- **Assumed until checked against a real voice-lab (P2).** A refusal body is `{"code", "detail"}` at the top level. The client also reads `{"error": {…}}`.
+- **OpenClaw adapter.**
+  - It sends `model: "openclaw/<agent>"`, plus `x-openclaw-agent-id` when an agent id is set.
+  - It sends `user: "parley:<conversation>"` for the session, and the style text as `instructions`.
+  - It reads `output_text`, or else the `output_text` parts of `output[].content[]`.
+  - It has been tested only against a local fake.
+- **Push payload.** `{"aps": {"alert": "Reply ready", "sound": "default"}, "conversation_id", "turn_id"}`. P1 records the payload and does not send it.
+- **Retention.** An hourly sweep deletes audio older than 30 days. Text and timings stay (P-Q5).
+
+**`timings.json` (`parley.timings/v1`)**
+
+- `{format, source, offsets, duration_ms, text_length, turn_id, exact_sentences, sentences[], words[]}`.
+- A sentence is `{index, char_start, char_end, start_ms, end_ms}`. A word is the same, plus the index of its `sentence`.
+- Offsets are half-open ranges of Unicode scalars (code points) in the shown text.
+- A word's range leaves out the punctuation around it.
+- The weights, in syllable units: a 0.3-syllable lead-in, a 1.0 pause after `, ; : —`, a 1.6 pause after a mid-sentence `. ! ?`, and a 1.2-syllable tail after the last word.
+
+**The app**
+
+- **Targets and versions.** iOS 26.0, iPhone only, built with Xcode 26.6 in Swift 5 language mode.
+- **ParleyKit.** The logic lives in `ios/ParleyKit`, a Swift package (iOS 18 and macOS 15) tested with `swift test`. It holds the models and client, the SSE parser, timings, the highlight cursor, the playback machine and the speeds.
+- **The project.** The Xcode project is generated from `ios/project.yml` by XcodeGen 2.46.0, installed in CI by checksum. The `.xcodeproj` is not committed.
+- **The reader.** The reply is laid out as word tokens in a flow layout, so a tap seeks to a word.
+  - The heard word is filled with the accent colour, and its sentence is tinted.
+  - A word stays lit through the pause after it.
+  - The clock is `AVAudioPlayer.currentTime`, sampled on a `CADisplayLink`.
+  - Leaving the reader pauses playback. The lock screen controls a reply while it plays in the background.
+- **Settings and cache.**
+  - The relay URL is kept in UserDefaults, and the dev token in the Keychain (this device only).
+  - SwiftData caches conversations, turns and timings. Reply audio is cached in Caches for 7 days (P-Q5).
+  - `NSAllowsLocalNetworking` permits plain `http` for a dev relay on the local network or in the simulator.
+- **Notifications.** The settings screen asks for notification permission. Push itself is P2.
+
+**CI.** The `verify` job (`ubuntu-latest`) runs `./scripts/verify-linux`, which includes the relay's tests through uv 0.12.21. The `ios` job runs on `macos-26`:
+
+1. `swift test` for ParleyKit.
+2. XcodeGen generates the project.
+3. `parley-relay --dev` starts on the runner.
+4. `xcodebuild test` runs on an iPhone 17 simulator (iOS 26.5). The UI tests send a turn, wait for `ready`, and check that the highlight advances with the audio.
+
+The xcresult, with its screenshots, and the relay's log are kept as the `ios-test-results` artifact.
 
 ## Decisions (owner, 2026-10-15: the recommendations accepted)
 

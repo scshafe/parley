@@ -40,8 +40,10 @@ jobs:
         run: |
           ./scripts/verify-linux
 
-  # The iOS app (ios/). NATIVE-01: macos-26 (Xcode 26). ParleyKit, the app's
-  # logic as a Swift package, is unit tested with `swift test`.
+  # The iOS app (ios/): ParleyKit's unit tests with `swift test`, then the app
+  # built from the XcodeGen spec and its UI tests run on an iPhone simulator
+  # against the relay in --dev mode (fake agent, fake voice-lab, synthetic
+  # audio), all on this runner. NATIVE-01: macos-26 (Xcode 26).
   ios:
     runs-on: macos-26
     timeout-minutes: 60
@@ -50,9 +52,58 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      # astral-sh/setup-uv v10.3.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884
+        with:
+          version: "0.12.21"
+          enable-cache: false
       - name: Select Xcode 26.6
         run: |
           sudo xcode-select -s /Applications/Xcode_26.6.app
           xcodebuild -version
+      - name: Install XcodeGen 2.46.0 (checksum pinned)
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/xcodegen.zip" \
+            https://github.com/yonaskolb/XcodeGen/releases/download/2.46.0/xcodegen.zip
+          echo "4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806  $RUNNER_TEMP/xcodegen.zip" \
+            | shasum -a 256 -c -
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
       - name: ParleyKit unit tests
         run: swift test --package-path ios/ParleyKit
+      - name: Generate the Xcode project
+        run: xcodegen generate --spec ios/project.yml
+      - name: Start the relay in dev mode
+        run: |
+          cd relay
+          nohup uv run --frozen --python 3.12 parley-relay --dev --port 8765 \
+            --data-dir "$RUNNER_TEMP/relay-data" --fake-agent-delay 0.5 --fake-speech-speed 0.1 \
+            > "$RUNNER_TEMP/relay.log" 2>&1 &
+          for _ in $(seq 1 90); do
+            if curl -sf http://127.0.0.1:8765/healthz; then exit 0; fi
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/relay.log"
+          exit 1
+      - name: Build and test the app on an iPhone simulator
+        run: |
+          set -o pipefail
+          xcodebuild test -project ios/Parley.xcodeproj -scheme Parley \
+            -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.5' \
+            -resultBundlePath "$RUNNER_TEMP/Parley.xcresult" \
+            2>&1 | tee "$RUNNER_TEMP/xcodebuild.log" \
+            | grep -E --line-buffered '(error:|warning: .*Parley|Test Suite|Test Case|\*\* )' || true
+          grep -q '\*\* TEST SUCCEEDED \*\*' "$RUNNER_TEMP/xcodebuild.log"
+      - name: Relay log
+        if: always()
+        run: cat "$RUNNER_TEMP/relay.log" || true
+      # actions/upload-artifact v7.0.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: ios-test-results
+          path: |
+            ${{ runner.temp }}/Parley.xcresult
+            ${{ runner.temp }}/xcodebuild.log
+            ${{ runner.temp }}/relay.log
+          if-no-files-found: ignore
