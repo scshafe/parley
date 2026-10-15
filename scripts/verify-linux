@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# The repository's one verify command (dev.toml [verify]): shell syntax, then
-# the Python tests. The iOS app is built and tested on macOS (docs/DESIGN.md).
+# The repository's one verify command (dev.toml [verify]): shell syntax, the
+# repository's own Python tests, then the relay's tests (uv, network-free). The
+# iOS app is built and tested on macOS by CI's ios job (docs/DESIGN.md).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -10,3 +11,9 @@ for script in "${scripts[@]}"; do
 done
 
 python3 -B -m unittest discover -s tests -t . -v 2>&1 | tail -n 3
+
+if ! command -v uv >/dev/null 2>&1; then
+  echo "verify-linux: uv is needed for the relay's tests (https://docs.astral.sh/uv/)" >&2
+  exit 1
+fi
+(cd relay && PYTHONDONTWRITEBYTECODE=1 uv run --frozen --python 3.12 pytest -p no:cacheprovider)

@@ -1,0 +1,30 @@
+[project]
+name = "parley-relay"
+version = "0.1.0"
+description = "Parley's relay: turns to the agent, replies to voice-lab speech, follow-along timings to the app."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "starlette>=0.47",
+    "uvicorn>=0.35",
+    "httpx>=0.28",
+]
+
+[project.scripts]
+parley-relay = "parley_relay.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4",
+]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/parley_relay"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
