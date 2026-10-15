@@ -7,7 +7,7 @@ the owner's voice-lab voice release; the phone gets a notification and plays
 the reply with follow-along highlighting.
 
 - The owner's brief: [docs/brief.md](docs/brief.md)
-- The design: `docs/DESIGN.md`
+- The design: [docs/DESIGN.md](docs/DESIGN.md)
 
 ## Build and test
 
