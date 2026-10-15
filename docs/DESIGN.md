@@ -1,7 +1,7 @@
 # Parley: design
 
-Design, 2026-10-15. Status: **proposed**, for the owner's review. The brief is
-[brief.md](brief.md). Open decisions are at the end; nothing is built yet.
+Design, 2026-10-15. Status: **accepted** (owner, 2026-10-15: every
+recommendation below). The brief is [brief.md](brief.md). Nothing is built yet.
 
 ## The shape
 
@@ -157,15 +157,15 @@ Mini's gateway, `openclaw.<tailnet>`, which is reachable today.
 
 | Phase | What | Gate |
 | --- | --- | --- |
-| P0 | This design, the decisions below, and the project set up: repository, `agent-parley`, picker. | The owner's answers. |
+| P0 | This design, the decisions below, and the project set up: repository, `agent-parley`, picker, publication. | Done 2026-10-15. |
 | P1 | The relay pipeline with fakes. The app: conversations, composer, reader-player with estimated word timings, polling instead of push. | `[verify]` green; the app in the simulator against a stub relay. |
 | P2 | Real integrations: the OpenClaw adapter, the voice-lab caller and webhook, APNs push, the Pocket ID sign-in, the relay deployed. Owner steps: register the voice-lab caller and the Pocket ID clients, place the APNs key, enable OpenClaw's HTTP endpoint. | One real turn on the phone: a notification, the owner's voice, highlighting in sync. |
 | P3 | Forced alignment for word timings, plus the voice-lab segment-range change (a voice-lab PR by its agent). | Highlight drift under 100 ms on 20 sample replies. |
 | P4 | Play from the first sentence (voice-lab segment SSE). Voice input with on-device speech recognition. Conversation search. | |
 
-## Decisions (owner)
+## Decisions (owner, 2026-10-15: the recommendations accepted)
 
-| Id | Question | Recommendation |
+| Id | Question | Decision |
 | --- | --- | --- |
 | P-Q1 | **Apple Developer Program.** Push notifications (APNs) need a paid membership, $99 a year. Free provisioning has no push, and its builds expire after 7 days. tastemaker's plan already includes enrolling an organization (its D8). | Enroll now as an individual, so this can be built and installed without waiting for tastemaker's organization (legal entity, D-U-N-S). The app can move to the organization later. |
 | P-Q2 | **Public (free software) or private repository.** | **Public.** It matches your stated plan of a free iOS app, and gives free macOS CI so the PC's agent can build and test the iOS app. Nothing secret lives in the repository. It goes public after the publication screen (infra `docs/platform/repo-publication-screen-2026-10-05.md`). It starts private until then. |
