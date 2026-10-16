@@ -1,5 +1,6 @@
 import AuthenticationServices
 import ParleyKit
+import SwiftData
 import SwiftUI
 import UserNotifications
 
@@ -8,6 +9,8 @@ import UserNotifications
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var context
+    @Environment(PlayerController.self) private var player
     @Environment(\.webAuthenticationSession) private var webAuthenticationSession
     @State private var urlText = ""
     @State private var tokenText = ""
@@ -28,6 +31,11 @@ struct SettingsView: View {
                     Button("Check connection") { Task { await check() } }
                         .disabled(RelayConfiguration.parseURL(urlText) == nil || !canAuthenticate)
                         .accessibilityIdentifier("checkConnection")
+                    if let url = RelayConfiguration.parseURL(urlText),
+                       let problem = model.problem(baseURL: url, devToken: trimmedToken), model.isSignedIn {
+                        Text(problem).font(.footnote).foregroundStyle(.orange)
+                            .accessibilityIdentifier("relayProblem")
+                    }
                     if let checkResult {
                         Text(checkResult).font(.footnote).foregroundStyle(.secondary)
                             .accessibilityIdentifier("checkResult")
@@ -84,7 +92,7 @@ struct SettingsView: View {
             if model.isSignedIn {
                 LabeledContent("Signed in as", value: model.account?.label ?? "you")
                     .accessibilityIdentifier("accountLabel")
-                Button("Sign out", role: .destructive) { Task { await model.signOut() } }
+                Button("Sign out", role: .destructive) { Task { await signOut() } }
                     .accessibilityIdentifier("signOutButton")
             } else {
                 Button {
@@ -123,8 +131,11 @@ struct SettingsView: View {
         return text
     }
 
+    private var trimmedToken: String { tokenText.trimmingCharacters(in: .whitespacesAndNewlines) }
+
     private var canAuthenticate: Bool {
-        !tokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.isSignedIn
+        guard let url = RelayConfiguration.parseURL(urlText) else { return false }
+        return model.client(baseURL: url, devToken: trimmedToken) != nil
     }
 
     private var notificationLabel: String {
@@ -139,6 +150,16 @@ struct SettingsView: View {
     private func save() {
         model.update(relayURL: urlText.trimmingCharacters(in: .whitespacesAndNewlines),
                      devToken: tokenText.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// Sign out, and forget what this phone kept of the relay: the cached
+    /// conversations and the reply audio.
+    private func signOut() async {
+        player.stop()
+        await model.signOut()
+        CacheStore.removeAll(in: context)
+        AudioCache.removeAll()
+        checkResult = nil
     }
 
     private func signIn() async {

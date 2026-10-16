@@ -67,7 +67,7 @@ struct ConversationsView: View {
 
     private func reload() async {
         guard let client = model.client else {
-            errorText = RelayError.notConfigured.localizedDescription
+            errorText = model.configurationProblem ?? RelayError.notConfigured.localizedDescription
             return
         }
         loading = true

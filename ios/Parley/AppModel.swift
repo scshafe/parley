@@ -3,6 +3,7 @@ import Foundation
 import Observation
 import ParleyKit
 import SwiftUI
+import UIKit
 
 typealias ParleyKitTurn = ParleyKit.Turn
 
@@ -12,7 +13,8 @@ typealias ParleyKitTurn = ParleyKit.Turn
 ///
 /// Two ways to authenticate to the relay:
 /// - **Sign in** with Pocket ID (a real relay behind the door): the session's
-///   access token, refreshed before it expires.
+///   access token, refreshed before it expires. It is sent only over https to
+///   a host under `PARLEY_RELAY_HOST_SUFFIX` (the tailnet).
 /// - **A dev token** (a dev relay, `parley-relay --dev`): sent as it is. When
 ///   one is set it is used instead of the sign-in.
 @Observable
@@ -30,8 +32,9 @@ final class AppModel {
     private(set) var devToken: String
     private(set) var account: OIDCAccount?
     private(set) var isSignedIn: Bool
-    /// Bumped when the sign-in changes or its access token is refreshed, so an
-    /// open event stream reconnects with the new token.
+    /// Bumped when the sign-in changes, so an open event stream reconnects.
+    /// Not on a refresh: a stream picks the new token up when it reconnects,
+    /// and reconnecting on every refresh loops against a relay that refuses.
     private(set) var authGeneration = 0
     /// Bumped each time the app comes back to the foreground: the event stream
     /// reconnects (iOS may have cut it while the app was suspended).
@@ -39,11 +42,14 @@ final class AppModel {
 
     /// Pocket ID, from the build settings (`PARLEY_OIDC_ISSUER`, `PARLEY_OIDC_CLIENT_ID`).
     let oidcConfiguration: OIDCConfiguration?
+    /// Relay hosts that may receive the session token (`PARLEY_RELAY_HOST_SUFFIX`).
+    let relayHostSuffix: String
     @ObservationIgnored let session: TokenSession?
 
     init() {
         let env = ProcessInfo.processInfo.environment
         oidcConfiguration = AppModel.oidcConfigurationFromInfoPlist()
+        relayHostSuffix = Bundle.main.object(forInfoDictionaryKey: "ParleyRelayHostSuffix") as? String ?? ""
         let store: TokenStoring
         if AppModel.isUITesting {
             // UI tests point the app at a dev relay (`parley-relay --dev`).
@@ -51,6 +57,7 @@ final class AppModel {
             devToken = env["PARLEY_DEV_TOKEN"] ?? "parley-dev"
             store = MemoryTokenStore()
         } else {
+            AppModel.forgetAPreviousInstall()
             relayURLString = UserDefaults.standard.string(forKey: "relayURL") ?? ""
             devToken = Keychain.get("relayToken") ?? ""
             store = KeychainTokenStore()
@@ -58,7 +65,9 @@ final class AppModel {
         let saved = store.load()
         account = saved?.account
         isSignedIn = saved != nil
-        session = oidcConfiguration.map { TokenSession(client: OIDCClient(configuration: $0), store: store) }
+        session = oidcConfiguration.map {
+            TokenSession(client: OIDCClient(configuration: $0), store: store, keepAlive: BackgroundRefresh())
+        }
         if let session {
             Task { [weak self] in
                 await session.setOnChange { change in
@@ -87,17 +96,34 @@ final class AppModel {
         return isSignedIn ? .signedIn : .none
     }
 
-    var isConfigured: Bool { relayURL != nil && authMode != .none }
+    var isConfigured: Bool { client != nil }
+
+    /// Why there is no relay client, for the person.
+    var configurationProblem: String? {
+        guard let url = relayURL else { return "Set the relay URL in Settings." }
+        return problem(baseURL: url, devToken: devToken)
+    }
+
+    func problem(baseURL: URL, devToken: String) -> String? {
+        if !devToken.isEmpty { return nil }
+        guard isSignedIn, session != nil else { return "Sign in, or set a dev token for a dev relay, in Settings." }
+        guard RelayConfiguration.allowsSessionToken(to: baseURL, hostSuffix: relayHostSuffix) else {
+            return "Your sign-in is sent only over https to a relay under \(relayHostSuffix.isEmpty ? "(no host set in this build)" : relayHostSuffix). For another relay, set its dev token."
+        }
+        return nil
+    }
 
     var client: RelayClient? {
         guard let url = relayURL else { return nil }
         return client(baseURL: url, devToken: devToken)
     }
 
-    /// A client for settings that are not saved yet ("Check connection").
+    /// A client for these settings (also unsaved ones, for "Check connection").
+    /// The session's token goes only to an allowed https relay.
     func client(baseURL: URL, devToken: String) -> RelayClient? {
         if !devToken.isEmpty { return RelayClient(baseURL: baseURL, auth: StaticBearer(token: devToken)) }
-        guard isSignedIn, let session else { return nil }
+        guard isSignedIn, let session,
+              RelayConfiguration.allowsSessionToken(to: baseURL, hostSuffix: relayHostSuffix) else { return nil }
         return RelayClient(baseURL: baseURL, auth: session)
     }
 
@@ -143,13 +169,22 @@ final class AppModel {
             account = who
             isSignedIn = true
         case .refreshed:
-            break
+            return
         case .signedOut:
             if !isSignedIn { return }
             account = nil
             isSignedIn = false
         }
         authGeneration += 1
+    }
+
+    /// The Keychain outlives a deleted app; UserDefaults does not. On the
+    /// first launch of a new install, drop what an old one left there.
+    private static func forgetAPreviousInstall() {
+        let key = "installed"
+        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        Keychain.removeAll()
+        UserDefaults.standard.set(true, forKey: key)
     }
 
     private static func oidcConfigurationFromInfoPlist() -> OIDCConfiguration? {
@@ -176,4 +211,29 @@ struct KeychainTokenStore: TokenStoring {
     func save(_ tokens: OIDCTokens?) {
         Keychain.set(data: tokens.flatMap { try? JSONEncoder().encode($0) }, for: Self.account)
     }
+}
+
+/// A background task around a token refresh, so the rotated refresh token is
+/// saved even if the app is leaving the foreground.
+struct BackgroundRefresh: RefreshKeepAlive {
+    @MainActor func begin() async -> Int {
+        let box = TaskBox()
+        box.id = UIApplication.shared.beginBackgroundTask(withName: "parley.token-refresh") {
+            // Out of time: end it rather than be killed; the refresh is retried later.
+            MainActor.assumeIsolated {
+                if box.id != .invalid { UIApplication.shared.endBackgroundTask(box.id) }
+                box.id = .invalid
+            }
+        }
+        return box.id.rawValue
+    }
+
+    @MainActor func end(_ id: Int) async {
+        let task = UIBackgroundTaskIdentifier(rawValue: id)
+        if task != .invalid { UIApplication.shared.endBackgroundTask(task) }
+    }
+}
+
+private final class TaskBox: @unchecked Sendable {
+    var id: UIBackgroundTaskIdentifier = .invalid
 }

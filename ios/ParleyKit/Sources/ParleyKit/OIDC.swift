@@ -64,15 +64,18 @@ public struct OIDCDiscovery: Decodable, Equatable, Sendable {
     public var authorizationEndpoint: URL
     public var tokenEndpoint: URL
     public var endSessionEndpoint: URL?
+    public var revocationEndpoint: URL?
     public var scopesSupported: [String]?
     public var codeChallengeMethodsSupported: [String]?
 
     public init(issuer: String, authorizationEndpoint: URL, tokenEndpoint: URL, endSessionEndpoint: URL? = nil,
-                scopesSupported: [String]? = nil, codeChallengeMethodsSupported: [String]? = nil) {
+                revocationEndpoint: URL? = nil, scopesSupported: [String]? = nil,
+                codeChallengeMethodsSupported: [String]? = nil) {
         self.issuer = issuer
         self.authorizationEndpoint = authorizationEndpoint
         self.tokenEndpoint = tokenEndpoint
         self.endSessionEndpoint = endSessionEndpoint
+        self.revocationEndpoint = revocationEndpoint
         self.scopesSupported = scopesSupported
         self.codeChallengeMethodsSupported = codeChallengeMethodsSupported
     }
@@ -168,9 +171,11 @@ public final class OIDCClient: @unchecked Sendable {
         guard doc.issuer == configuration.issuerString else {
             throw OIDCError.discovery("the discovery document names a different issuer")
         }
-        for endpoint in [doc.authorizationEndpoint, doc.tokenEndpoint] {
-            guard let scheme = endpoint.scheme?.lowercased(), scheme == "https" || scheme == "http" else {
-                throw OIDCError.discovery("the discovery document has an unusable endpoint")
+        // https only, unless the issuer itself is plain http (a test issuer).
+        let allowed: Set<String> = configuration.issuer.scheme?.lowercased() == "http" ? ["https", "http"] : ["https"]
+        for endpoint in [doc.authorizationEndpoint, doc.tokenEndpoint] + [doc.revocationEndpoint].compactMap({ $0 }) {
+            guard let scheme = endpoint.scheme?.lowercased(), allowed.contains(scheme) else {
+                throw OIDCError.discovery("the discovery document has an endpoint that is not https")
             }
         }
         if let methods = doc.codeChallengeMethodsSupported, !methods.contains("S256") {
@@ -270,6 +275,19 @@ public final class OIDCClient: @unchecked Sendable {
         if status == 400 || status == 401 { throw OIDCError.signInRequired }
         guard status == 200 else { throw OIDCError.token("the token endpoint answered HTTP \(status)") }
         return try self.tokens(from: body, issuer: discovery.issuer, nonce: nil, previous: tokens)
+    }
+
+    // MARK: Signing out
+
+    /// Revoke a refresh token (RFC 7009), if the issuer advertises a
+    /// revocation endpoint. Best effort: returns whether it was revoked.
+    @discardableResult
+    public func revoke(refreshToken: String) async -> Bool {
+        guard let discovery = try? await discover(), let endpoint = discovery.revocationEndpoint,
+              let (status, _) = try? await postForm(endpoint, [
+                  "token": refreshToken, "token_type_hint": "refresh_token", "client_id": configuration.clientID,
+              ]) else { return false }
+        return status == 200
     }
 
     // MARK: Token responses

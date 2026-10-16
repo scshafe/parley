@@ -22,6 +22,17 @@ public struct RelayConfiguration: Equatable, Sendable {
         }
         return url
     }
+
+    /// Whether a signed-in session's token may be sent to `url`: only over
+    /// https, and only to a host under `hostSuffix` (for example
+    /// `.example.ts.net`, the tailnet). An empty suffix allows no host.
+    public static func allowsSessionToken(to url: URL, hostSuffix: String) -> Bool {
+        guard url.scheme?.lowercased() == "https", let host = url.host?.lowercased(), !host.isEmpty else { return false }
+        let suffix = hostSuffix.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !suffix.isEmpty else { return false }
+        let dotted = suffix.hasPrefix(".") ? suffix : "." + suffix
+        return host.hasSuffix(dotted) && host.count > dotted.count
+    }
 }
 
 public enum RelayError: Error, Equatable, LocalizedError {
@@ -71,12 +82,28 @@ public struct StaticBearer: BearerProvider {
     public func tokenAfterRejection(_ rejected: String) async throws -> String? { nil }
 }
 
+/// Relay calls follow a redirect only within the same origin (scheme, host
+/// and port), so the bearer token never goes to another host.
+public final class SameOriginRedirects: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    public func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                           newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(Self.allows(from: task.originalRequest?.url, to: request.url) ? request : nil)
+    }
+
+    static func allows(from: URL?, to: URL?) -> Bool {
+        guard let from, let to else { return false }
+        return from.scheme?.lowercased() == to.scheme?.lowercased() && from.host?.lowercased() == to.host?.lowercased()
+            && from.port == to.port
+    }
+}
+
 /// The relay's API, for the app. Every call carries the current bearer token;
 /// a call the relay refuses with 401 is retried once with a fresh token.
 public final class RelayClient: @unchecked Sendable {
     public let baseURL: URL
     public let auth: BearerProvider
     private let session: URLSession
+    private let redirects = SameOriginRedirects()
 
     public init(baseURL: URL, auth: BearerProvider, session: URLSession = .shared) {
         self.baseURL = baseURL
@@ -139,7 +166,7 @@ public final class RelayClient: @unchecked Sendable {
             let data: Data
             let response: URLResponse
             do {
-                (data, response) = try await session.data(for: req)
+                (data, response) = try await session.data(for: req, delegate: redirects)
             } catch {
                 throw RelayError.transport((error as NSError).localizedDescription)
             }
@@ -216,7 +243,7 @@ public final class RelayClient: @unchecked Sendable {
         let tmp: URL = try await authorized { token in
             let (tmp, response): (URL, URLResponse)
             do {
-                (tmp, response) = try await session.download(for: request(path, token: token))
+                (tmp, response) = try await session.download(for: request(path, token: token), delegate: redirects)
             } catch {
                 throw RelayError.transport((error as NSError).localizedDescription)
             }
@@ -242,6 +269,7 @@ public final class RelayClient: @unchecked Sendable {
     public func events(conversationID: String, after: Int) -> AsyncThrowingStream<RelayEvent, Error> {
         let path = "/api/v1/conversations/\(conversationID)/events?after=\(after)"
         let session = self.session
+        let redirects = self.redirects
         return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
@@ -251,7 +279,7 @@ public final class RelayClient: @unchecked Sendable {
                         req.timeoutInterval = 60 * 15
                         let (bytes, response): (URLSession.AsyncBytes, URLResponse)
                         do {
-                            (bytes, response) = try await session.bytes(for: req)
+                            (bytes, response) = try await session.bytes(for: req, delegate: redirects)
                         } catch {
                             throw RelayError.transport((error as NSError).localizedDescription)
                         }

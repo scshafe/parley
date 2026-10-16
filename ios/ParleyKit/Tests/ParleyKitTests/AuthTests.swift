@@ -37,10 +37,22 @@ final class FakeIssuer: @unchecked Sendable {
     var nonce = ""
     var expiresIn = 3600
     var lastForm: [String: String] = [:]
+    var advertiseRevocation = false
+    var revoked: [String] = []
 
     func handle(_ req: URLRequest) -> (Int, [String: String], Data)? {
         let path = req.url?.path ?? ""
-        if path == "/.well-known/openid-configuration" { return (200, [:], Data(discoveryJSON.utf8)) }
+        if path == "/.well-known/openid-configuration" {
+            var doc = discoveryJSON
+            if advertiseRevocation {
+                doc = doc.replacingOccurrences(of: "\"issuer\":", with: "\"revocation_endpoint\":\"\(issuer)/api/oidc/revoke\",\"issuer\":")
+            }
+            return (200, [:], Data(doc.utf8))
+        }
+        if path == "/api/oidc/revoke" {
+            revoked.append(form(req)["token"] ?? "")
+            return (200, [:], Data())
+        }
         guard path == "/api/oidc/token" else { return nil }
         tokenCalls += 1
         let f = form(req)
@@ -99,6 +111,19 @@ final class OIDCTests: XCTestCase {
             XCTFail("expected a refusal")
         } catch {
             XCTAssertEqual(error as? OIDCError, .discovery("the discovery document names a different issuer"))
+        }
+    }
+
+    func testDiscoveredEndpointsMustBeHTTPS() async {
+        StubProtocol.handler = { _ in
+            (200, [:], Data(discoveryJSON.replacingOccurrences(of: "\(issuer)/api/oidc/token",
+                                                                  with: "http://id.example.ts.net/api/oidc/token").utf8))
+        }
+        do {
+            _ = try await client.discover()
+            XCTFail("expected a refusal")
+        } catch {
+            XCTAssertEqual(error as? OIDCError, .discovery("the discovery document has an endpoint that is not https"))
         }
     }
 
@@ -307,6 +332,72 @@ final class TokenSessionTests: XCTestCase {
         }
         XCTAssertTrue(StubProtocol.seen.isEmpty)
     }
+}
+
+extension TokenSessionTests {
+    func testARelayThatKeepsRefusingIsNotRefreshedInALoop() async throws {
+        let fake = self.fake!
+        StubProtocol.handler = { req in fake.handle(req) ?? (401, [:], Data()) }
+        let clock = Clock()
+        let ts = TokenSession(client: oidc, store: MemoryTokenStore(tokens(expiresIn: 3600)), now: { clock.now })
+        let relay = RelayClient(baseURL: URL(string: "https://relay.example.ts.net")!, auth: ts, session: session)
+        for _ in 0..<3 {
+            do {
+                _ = try await relay.listConversations()
+                XCTFail("expected unauthorized")
+            } catch {
+                XCTAssertEqual(error as? RelayError, .unauthorized)
+            }
+        }
+        XCTAssertEqual(fake.tokenCalls, 1, "one refresh, then the 401 stands")
+        clock.now += TokenSession.rejectionRefreshInterval + 1
+        _ = try? await relay.listConversations()
+        XCTAssertEqual(fake.tokenCalls, 2, "after the interval a rejection may refresh again")
+    }
+
+    func testSignOutRevokesTheRefreshTokenWhenTheIssuerOffersIt() async {
+        fake.advertiseRevocation = true
+        let store = MemoryTokenStore(tokens(expiresIn: 600))
+        let ts = TokenSession(client: oidc, store: store)
+        await ts.signOut()
+        XCTAssertNil(store.load())
+        XCTAssertEqual(fake.revoked, ["r0"])
+    }
+
+    func testSignOutWithoutARevocationEndpointJustForgets() async {
+        let store = MemoryTokenStore(tokens(expiresIn: 600))
+        let ts = TokenSession(client: oidc, store: store)
+        await ts.signOut()
+        XCTAssertNil(store.load())
+        XCTAssertEqual(fake.revoked, [])
+        XCTAssertEqual(fake.tokenCalls, 0)
+    }
+
+    func testTheSessionTokenGoesOnlyToHTTPSTailnetHosts() {
+        func ok(_ u: String, _ suffix: String = ".example.ts.net") -> Bool {
+            RelayConfiguration.allowsSessionToken(to: URL(string: u)!, hostSuffix: suffix)
+        }
+        XCTAssertTrue(ok("https://parley.example.ts.net"))
+        XCTAssertTrue(ok("https://Parley.Example.ts.net:443/x", "example.ts.net"))
+        XCTAssertFalse(ok("http://parley.example.ts.net"))
+        XCTAssertFalse(ok("https://parley.example.ts.net.evil.com"))
+        XCTAssertFalse(ok("https://evilexample.ts.net"))
+        XCTAssertFalse(ok("https://example.ts.net"))
+        XCTAssertFalse(ok("http://127.0.0.1:8765"))
+        XCTAssertFalse(ok("https://parley.example.ts.net", ""))
+    }
+
+    func testRedirectsAreFollowedOnlyWithinTheOrigin() {
+        let from = URL(string: "https://parley.example.ts.net/api/v1/x")
+        XCTAssertTrue(SameOriginRedirects.allows(from: from, to: URL(string: "https://parley.example.ts.net/api/v1/y")))
+        XCTAssertFalse(SameOriginRedirects.allows(from: from, to: URL(string: "https://evil.example/api")))
+        XCTAssertFalse(SameOriginRedirects.allows(from: from, to: URL(string: "http://parley.example.ts.net/api/v1/y")))
+        XCTAssertFalse(SameOriginRedirects.allows(from: from, to: URL(string: "https://parley.example.ts.net:8443/y")))
+    }
+}
+
+final class Clock: @unchecked Sendable {
+    var now = Date()
 }
 
 final class ChangeLog: @unchecked Sendable {

@@ -25,6 +25,9 @@ settings:
     # client. ios/project.local.yml can override them.
     PARLEY_OIDC_ISSUER: https://id.colobus-stargazer.ts.net
     PARLEY_OIDC_CLIENT_ID: parley-ios
+    # The signed-in session's token is sent only over https to a relay host
+    # under this suffix; any other relay needs a dev token.
+    PARLEY_RELAY_HOST_SUFFIX: .colobus-stargazer.ts.net
 packages:
   ParleyKit:
     path: ParleyKit
@@ -54,6 +57,7 @@ targets:
         ParleyOIDCIssuer: $(PARLEY_OIDC_ISSUER)
         ParleyOIDCClientID: $(PARLEY_OIDC_CLIENT_ID)
         ParleyOIDCRedirectURI: com.scshafe.parley://oauth/callback
+        ParleyRelayHostSuffix: $(PARLEY_RELAY_HOST_SUFFIX)
         NSAppTransportSecurity:
           # The relay is https on the tailnet; plain http only for a dev relay
           # on this machine (the simulator) or the local network.
