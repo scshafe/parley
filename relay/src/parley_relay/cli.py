@@ -28,6 +28,8 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
     try:
         hosts = parse_hosts(args.host)
+        if args.dev:
+            require_loopback(hosts)
     except ValueError as exc:
         p.error(str(exc))  # exits 2 with the usage line
 
@@ -52,8 +54,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.dev:
         where = "  ".join(url_for(h, args.port) for h in hosts)
-        token_note = DEV_TOKEN if settings.token is None else "(from PARLEY_TOKEN / PARLEY_TOKEN_FILE)"
-        print(f"parley-relay --dev: {where}  token: {token_note}  data: {os.path.abspath(settings.data_dir)}",
+        print(f"parley-relay --dev: {where}  token: {DEV_TOKEN}  data: {os.path.abspath(settings.data_dir)}",
               file=sys.stderr)
         print("  fake agent and fake voice-lab (synthetic tones) run in-process; nothing leaves this machine.",
               file=sys.stderr)
@@ -84,6 +85,20 @@ def parse_hosts(value: str) -> list[str]:
         if len(set(hosts)) != len(hosts):
             raise ValueError("--host: an address is listed twice")
     return hosts
+
+
+def require_loopback(hosts: list[str]) -> None:
+    """``--dev``: its bearer is a public placeholder, so it listens only on this
+    machine (``localhost`` or loopback addresses)."""
+    for h in hosts:
+        if h.lower() == "localhost":
+            continue
+        try:
+            if ipaddress.ip_address(h).is_loopback:
+                continue
+        except ValueError:
+            pass
+        raise ValueError(f"--dev: listens only on loopback (localhost, 127.0.0.1, ::1); {h!r} is not")
 
 
 def url_for(host: str, port: int) -> str:

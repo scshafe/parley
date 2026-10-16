@@ -26,8 +26,10 @@ settings:
     PARLEY_OIDC_ISSUER: https://id.colobus-stargazer.ts.net
     PARLEY_OIDC_CLIENT_ID: parley-ios
     # The signed-in session's token is sent only over https to a relay host
-    # under this suffix; any other relay needs a dev token.
+    # under this suffix; the app refuses any other relay.
     PARLEY_RELAY_HOST_SUFFIX: .colobus-stargazer.ts.net
+    # The relay the login screen starts with (the person can change it).
+    PARLEY_DEFAULT_RELAY_URL: https://parley.colobus-stargazer.ts.net
     # Push notifications (B11) are opt-in: NO builds with no entitlements and
     # never registers for remote notifications, which a free (personal) team
     # needs. With a paid team, set PARLEY_PUSH: YES in ios/project.local.yml;
@@ -64,10 +66,11 @@ targets:
         ParleyOIDCClientID: $(PARLEY_OIDC_CLIENT_ID)
         ParleyOIDCRedirectURI: com.scshafe.parley://oauth/callback
         ParleyRelayHostSuffix: $(PARLEY_RELAY_HOST_SUFFIX)
+        ParleyDefaultRelayURL: $(PARLEY_DEFAULT_RELAY_URL)
         ParleyPushEnabled: $(PARLEY_PUSH)
         NSAppTransportSecurity:
-          # The relay is https on the tailnet; plain http only for a dev relay
-          # on this machine (the simulator) or the local network.
+          # The relay is https on the tailnet. Plain http is only for the UI
+          # tests' local relay in the simulator (Parley/UITestSeam.swift).
           NSAllowsLocalNetworking: true
     settings:
       base:
@@ -103,6 +106,8 @@ schemes:
       gatherCoverageData: false
       targets:
         - name: ParleyUITests
+      # The UI tests' fake session against `parley-relay --dev` (its public
+      # placeholder bearer), honoured only by a debug simulator build.
       environmentVariables:
-        PARLEY_RELAY_URL: http://127.0.0.1:8765
-        PARLEY_DEV_TOKEN: parley-dev
+        PARLEY_UI_TEST_RELAY_URL: http://127.0.0.1:8765
+        PARLEY_UI_TEST_ACCESS_TOKEN: parley-dev

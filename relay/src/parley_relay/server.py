@@ -25,24 +25,14 @@ from .voicelab import SpeechClient, TokenProvider, WebhookSecret
 
 log = logging.getLogger("parley")
 
-DEV_TOKEN = "parley-dev"  # a public placeholder for local development, not a secret
+# --dev's one bearer: a public placeholder for local development and the app's
+# UI tests (CI), not a secret. A dev relay listens only on loopback (cli.py).
+DEV_TOKEN = "parley-dev"
 DEV_PUBLIC_URL = "https://parley.example.ts.net"
 
 
 class ConfigError(Exception):
     pass
-
-
-def _read_secret(path: str | None, what: str) -> str:
-    if not path:
-        raise ConfigError(f"{what}: no file configured")
-    try:
-        value = Path(path).read_text("utf-8").strip()
-    except OSError as exc:
-        raise ConfigError(f"{what}: cannot read the configured file") from exc
-    if not value:
-        raise ConfigError(f"{what}: the configured file is empty")
-    return value
 
 
 def _list(value: str | None) -> tuple[str, ...]:
@@ -56,7 +46,6 @@ class Settings:
 
     dev: bool = False
     data_dir: Path = Path("state")
-    token: str | None = None  # --dev only: PARLEY_TOKEN_FILE or PARLEY_TOKEN replaces the placeholder
     # The app's sign-in (real mode): the bearer's issuer and audiences, the owner,
     # and the door's upstream address.
     oidc_issuer: str | None = None
@@ -88,16 +77,10 @@ class Settings:
     @classmethod
     def from_env(cls, *, dev: bool = False, env: dict[str, str] | None = None) -> Settings:
         e = dict(os.environ if env is None else env)
-        token = None
-        if dev and e.get("PARLEY_TOKEN_FILE"):
-            token = _read_secret(e["PARLEY_TOKEN_FILE"], "PARLEY_TOKEN_FILE")
-        elif dev and e.get("PARLEY_TOKEN"):
-            token = e["PARLEY_TOKEN"]
         msc = e.get("PARLEY_MAX_SENTENCE_CHARS")
         return cls(
             dev=dev,
             data_dir=Path(e.get("PARLEY_DATA_DIR") or (".parley-dev" if dev else "state")),
-            token=token,
             oidc_issuer=e.get("PARLEY_OIDC_ISSUER") or None,
             oidc_audiences=_list(e.get("PARLEY_OIDC_AUDIENCE")) or ("parley-ios",),
             owner_subject=e.get("PARLEY_OWNER_SUBJECT") or None,
@@ -139,7 +122,6 @@ def build(settings: Settings) -> Relay:
 
 
 def _build_dev(s: Settings) -> Relay:
-    token = s.token or DEV_TOKEN
     store = Store(s.data_dir)
     secret = WebhookSecret(os.urandom(32))
     callback = f"{DEV_PUBLIC_URL}/hooks/voice-lab"
@@ -164,7 +146,7 @@ def _build_dev(s: Settings) -> Relay:
     pipeline = Pipeline(store, agent, speech, push, PipelineSettings(
         callback_url=callback, poll_interval=s.poll_interval, max_sentence_chars=s.max_sentence_chars,
         backoff=0.5, backoff_cap=5.0))
-    app = build_app(store=store, pipeline=pipeline, token=token, webhook_secret=secret,
+    app = build_app(store=store, pipeline=pipeline, token=DEV_TOKEN, webhook_secret=secret,
                     on_shutdown=speech.aclose)
     holder["app"] = app
     return Relay(app, store, pipeline, push, fake, agent)

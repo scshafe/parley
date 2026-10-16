@@ -3,7 +3,7 @@ import os
 import Security
 
 /// Generic passwords in the Keychain (this device only, after first unlock):
-/// the dev token and the signed-in session's tokens.
+/// the signed-in session's tokens.
 enum Keychain {
     private static let service = "com.scshafe.parley"
     private static let log = Logger(subsystem: "com.scshafe.parley", category: "keychain")

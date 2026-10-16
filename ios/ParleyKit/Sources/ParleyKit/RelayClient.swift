@@ -1,16 +1,10 @@
 import Foundation
 
-public struct RelayConfiguration: Equatable, Sendable {
-    public var baseURL: URL
-    public var token: String
-
-    public init(baseURL: URL, token: String) {
-        self.baseURL = baseURL
-        self.token = token
-    }
-
-    /// Parse a relay URL typed in settings: `https://relay.example.ts.net`,
-    /// or `http://` for a local dev relay. A bare host gets `https://`.
+/// The relay's address, as the person types it, and where the signed-in
+/// session's token may go.
+public enum RelayConfiguration {
+    /// Parse a typed relay URL: `https://relay.example.ts.net`, or `http://`
+    /// (refused later for the session token). A bare host gets `https://`.
     public static func parseURL(_ raw: String) -> URL? {
         var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return nil }
@@ -33,6 +27,52 @@ public struct RelayConfiguration: Equatable, Sendable {
         let dotted = suffix.hasPrefix(".") ? suffix : "." + suffix
         return host.hasSuffix(dotted) && host.count > dotted.count
     }
+
+    /// Whether `url` is plain http to this machine (`127.0.0.1`, `::1`,
+    /// `localhost`): only the app's UI tests, in a debug simulator build,
+    /// accept one (a local fake relay).
+    public static func isLoopbackHTTP(_ url: URL) -> Bool {
+        guard url.scheme?.lowercased() == "http", let host = url.host?.lowercased() else { return false }
+        return host == "127.0.0.1" || host == "::1" || host == "[::1]" || host == "localhost"
+    }
+
+    /// The relay URL from the login screen or Settings, checked before the
+    /// session's token may go to it: it must parse, be https, and be a host
+    /// under `hostSuffix`. `allowLoopbackHTTP` (UI tests only) also accepts
+    /// plain http to this machine.
+    public static func validate(_ raw: String, hostSuffix: String,
+                                allowLoopbackHTTP: Bool = false) -> Result<URL, RelayURLProblem> {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return .failure(.empty) }
+        guard let url = parseURL(trimmed) else { return .failure(.invalid) }
+        if allowLoopbackHTTP && isLoopbackHTTP(url) { return .success(url) }
+        let suffix = hostSuffix.trimmingCharacters(in: .whitespaces)
+        guard !suffix.isEmpty else { return .failure(.noHostSuffixInBuild) }
+        guard url.scheme?.lowercased() == "https" else { return .failure(.notHTTPS) }
+        guard allowsSessionToken(to: url, hostSuffix: suffix) else { return .failure(.outsideHostSuffix(suffix)) }
+        return .success(url)
+    }
+}
+
+/// Why a relay URL cannot be used with the sign-in, for the person.
+public enum RelayURLProblem: Error, Equatable, LocalizedError {
+    case empty
+    case invalid
+    case notHTTPS
+    case outsideHostSuffix(String)
+    case noHostSuffixInBuild
+
+    public var errorDescription: String? {
+        switch self {
+        case .empty: return "Enter your relay's address."
+        case .invalid: return "That is not a relay address. It looks like https://parley.example.ts.net."
+        case .notHTTPS: return "The relay's address must start with https://. Your sign-in is never sent over plain http."
+        case .outsideHostSuffix(let suffix):
+            let shown = suffix.hasPrefix(".") ? "*" + suffix : "*." + suffix
+            return "Your sign-in is sent only to a relay under \(shown). Check the address."
+        case .noHostSuffixInBuild: return "This build allows no relay host (PARLEY_RELAY_HOST_SUFFIX is empty)."
+        }
+    }
 }
 
 public enum RelayError: Error, Equatable, LocalizedError {
@@ -45,9 +85,9 @@ public enum RelayError: Error, Equatable, LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case .notConfigured: return "Set the relay URL in Settings, and sign in or set a dev token."
-        case .unauthorized: return "The relay refused this app's credentials. Check the dev token, or sign in again in Settings."
-        case .signInRequired: return "Your sign-in has ended. Sign in again in Settings."
+        case .notConfigured: return "Set the relay's address and sign in."
+        case .unauthorized: return "The relay refused your sign-in. Sign out and sign in again, or check the relay's address."
+        case .signInRequired: return "Your sign-in has ended. Sign in again."
         case .http(let status, let code, let detail): return "The relay answered \(status) \(code): \(detail)"
         case .badResponse: return "The relay's answer could not be read."
         case .transport(let what): return "The relay could not be reached (\(what))."
@@ -55,8 +95,8 @@ public enum RelayError: Error, Equatable, LocalizedError {
     }
 }
 
-/// Where the relay client gets its bearer token: a fixed dev token, or the
-/// signed-in session that refreshes its access token (`TokenSession`).
+/// Where the relay client gets its bearer token: the signed-in session,
+/// which refreshes its access token (`TokenSession`).
 public protocol BearerProvider: Sendable {
     /// The token to send now. A session refreshes one that is about to expire.
     func currentToken() async throws -> String
@@ -64,22 +104,6 @@ public protocol BearerProvider: Sendable {
     /// with once, or `nil` when there is none. Throws `RelayError.signInRequired`
     /// when the session has ended.
     func tokenAfterRejection(_ rejected: String) async throws -> String?
-}
-
-/// A fixed token: the dev relay's, or P1's static bearer.
-public struct StaticBearer: BearerProvider {
-    public let token: String
-
-    public init(token: String) {
-        self.token = token
-    }
-
-    public func currentToken() async throws -> String {
-        guard !token.isEmpty else { throw RelayError.notConfigured }
-        return token
-    }
-
-    public func tokenAfterRejection(_ rejected: String) async throws -> String? { nil }
 }
 
 /// Relay calls follow a redirect only within the same origin (scheme, host
@@ -109,10 +133,6 @@ public final class RelayClient: @unchecked Sendable {
         self.baseURL = baseURL
         self.auth = auth
         self.session = session
-    }
-
-    public convenience init(configuration: RelayConfiguration, session: URLSession = .shared) {
-        self.init(baseURL: configuration.baseURL, auth: StaticBearer(token: configuration.token), session: session)
     }
 
     public func url(_ path: String) -> URL {

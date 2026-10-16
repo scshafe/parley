@@ -21,7 +21,7 @@ The relay in dev mode runs the whole turn flow on one machine. It uses a fake ag
 
 ```sh
 cd relay
-uv run parley-relay --dev          # http://127.0.0.1:8765, token parley-dev
+uv run parley-relay --dev          # http://127.0.0.1:8765, token parley-dev, loopback only
 ```
 
 The app is built on a Mac with Xcode 26:
@@ -32,7 +32,9 @@ xcodegen generate --spec ios/project.yml
 open ios/Parley.xcodeproj          # run on an iPhone simulator
 ```
 
-In the app's settings, the relay is `http://127.0.0.1:8765` and the dev token (under *Dev relay*) is `parley-dev`. A dev relay does not take a Pocket ID sign-in.
+The app opens on its login screen: the relay's address (prefilled with the build's `PARLEY_DEFAULT_RELAY_URL`) and **Sign in**, which signs in with Pocket ID. It talks only to a relay it is signed in to, over https under `PARLEY_RELAY_HOST_SUFFIX`, so it never takes a dev relay's token.
+
+To try a simulator build against the dev relay, use the UI tests' seam (`ios/Parley/UITestSeam.swift`): in the scheme's *Run* action, set the environment variables `PARLEY_UI_TESTING=1` and `PARLEY_UI_TEST_ACCESS_TOKEN=parley-dev`. A debug build in the simulator then accepts `http://127.0.0.1:8765`, and **Sign in** signs a fake session in without Pocket ID. Nothing is saved. A release build, or any build on a phone, ignores these variables.
 
 ## Install on your iPhone with a free Apple ID
 
@@ -65,7 +67,7 @@ In the app's settings, the relay is `http://127.0.0.1:8765` and the dev token (u
 
 **Push notifications** need a paid Apple Developer Program team: a free team cannot sign the `aps-environment` entitlement. They are off by default (`PARLEY_PUSH: "NO"` in `ios/project.yml`): the build carries no entitlements and never registers for remote notifications. Without push, Parley still posts a local "Reply ready" notification when a reply becomes ready while it runs in the background, which is shortly after you leave it, or while it plays a reply. With a paid team, add `PARLEY_PUSH: "YES"` to your `ios/project.local.yml` and generate again. The target then signs `ios/Entitlements/Parley-Push.entitlements`, with `aps-environment` `development`; an export for the App Store or TestFlight rewrites it. The app reads its APNs environment from its provisioning profile and registers its device token with the relay (`POST /api/v1/devices`). It removes that registration when you sign out or change the relay.
 
-On the phone, connect Tailscale. In Parley's settings, set the relay (`https://parley.<tailnet>.ts.net`), leave the dev token empty, and tap **Sign in**: Pocket ID opens in a sheet and you sign in with your passkey. The session (a refresh token) stays in the phone's Keychain, and the app renews its access token by itself. The token goes only over https to a relay under `PARLEY_RELAY_HOST_SUFFIX` (`ios/project.yml`; your local spec can change it).
+On the phone, connect Tailscale and open Parley. The login screen shows the relay's address, `https://parley.<tailnet>.ts.net` by default (`PARLEY_DEFAULT_RELAY_URL`; change it there if yours differs). Tap **Sign in**: Pocket ID opens in a sheet and you sign in with your passkey. The app then checks that the relay answers and opens your conversations; if the address is wrong or the relay does not answer, the login screen says so under the address. The session (a refresh token) stays in the phone's Keychain, and the app renews its access token by itself. The token goes only over https to a relay under `PARLEY_RELAY_HOST_SUFFIX` (`ios/project.yml`; your local spec can change it). **Sign out** is in Settings (the gear), and returns to the login screen.
 
 ## Build and test
 
@@ -80,6 +82,6 @@ CI (`.github/workflows/ci.yml`) runs it on Linux. On `macos-26` it also builds a
 1. `swift test` runs ParleyKit's tests.
 2. XcodeGen generates the project.
 3. `parley-relay --dev` starts on the runner.
-4. `xcodebuild test` runs the UI tests on an iPhone simulator against that relay.
+4. `xcodebuild test` runs the UI tests on an iPhone simulator against that relay. They sign in through the app's debug-only UI-test seam (a fake session; no Pocket ID) and cover the login screen's errors, sending a turn, and the reader-player.
 
 The test results, with screenshots, are kept as the run's `ios-test-results` artifact.
