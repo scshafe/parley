@@ -63,11 +63,17 @@ class OpenClawAgent:
     async def aclose(self) -> None:
         await self._client.aclose()
 
+    async def _auth_headers(self) -> httpx.Headers:
+        headers = httpx.Headers()
+        if (bearer := await self._token()):
+            headers["authorization"] = f"Bearer {bearer}"
+        return headers
+
     async def send_turn(self, conversation: AgentConversation, text: str) -> str:
-        headers = {"content-type": "application/json"}
-        token = await self._token()
-        if token:
-            headers["authorization"] = f"Bearer {token}"
+        # httpx.Headers masks authorization in its repr, and the token is never
+        # bound to a local name, so a traceback (pytest -l) cannot show it.
+        headers = httpx.Headers({"content-type": "application/json"})
+        headers.update(await self._auth_headers())
         if self._agent_id:
             headers["x-openclaw-agent-id"] = self._agent_id
         body = {

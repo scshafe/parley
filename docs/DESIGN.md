@@ -198,7 +198,7 @@ reference.
   - It sends `model: "openclaw/<agent>"`, plus `x-openclaw-agent-id` when an agent id is set.
   - It sends `user: "parley:<conversation>"` for the session, and the style text as `instructions`.
   - It reads `output_text`, or else the `output_text` parts of `output[].content[]`.
-  - It has been tested only against a local fake.
+  - It has been tested only against a local fake (P2: plus an opt-in live test; see [P2 build decisions](#p2-build-decisions-the-relay)).
 - **Push payload.** `{"aps": {"alert": "Reply ready", "sound": "default"}, "conversation_id", "turn_id"}`. P1 records the payload and does not send it (P2 sends it through APNs).
 - **Retention.** An hourly sweep deletes audio older than 30 days. Text and timings stay (P-Q5).
 
@@ -302,6 +302,16 @@ is the reference. The app's P2 work is recorded separately.
   - The key file is read on use, so placing it later turns push on without a restart.
   - A push never fails a turn: a ready turn is marked pushed whatever APNs answers.
 - **Tests.** A local HTTP/2 APNs fake (h2, cleartext prior knowledge) checks the provider token's signature, the headers, pruning, renewal and the hosts.
+
+**The OpenClaw adapter, live** (`relay/tests/test_openclaw_live.py`).
+
+- An opt-in contract test of `/v1/responses` against the real gateway (OpenClaw 2026.9.2, password mode: the password is the bearer). It is skipped unless `PARLEY_LIVE_OPENCLAW_URL` and `PARLEY_LIVE_OPENCLAW_TOKEN_FILE` are set. It checks three things:
+  - the response's status and where its text is (`output_text`, or the `output_text` parts of `output[].content[]`), and it prints which;
+  - that two turns with one `user` (`parley:<conversation>`) share a session;
+  - that a wrong password is `agent_refused` and is not retried.
+- The password is held in a wrapper whose repr is `<redacted>`, and the adapter keeps the bearer only inside `httpx.Headers`, whose repr masks it. A failing run, even with `pytest -l`, therefore never prints it (checked with a sentinel). `/dev/stdin` as the token file works only with `pytest -s`.
+- OpenClaw's docs list `status` `incomplete` (a reply cut at the token limit). The adapter reads its text like a completed one.
+- It has been run only against a local stand-in so far. The real run waits for runbook Stage 6 (the endpoint enabled) and Stage 7c (the password file).
 
 ## Decisions (owner, 2026-10-15: the recommendations accepted)
 
