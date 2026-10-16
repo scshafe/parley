@@ -34,6 +34,37 @@ open ios/Parley.xcodeproj          # run on an iPhone simulator
 
 In the app's settings, the relay is `http://127.0.0.1:8765` and the token is `parley-dev`.
 
+## Install on your iPhone with a free Apple ID
+
+`ios/project.yml` is unsigned, so CI can build it for the simulator. To run the app on a phone, sign it with your own team in a local spec that Git ignores. A free Apple ID (a "personal team") is enough to install and run Parley. It cannot sign push notifications, and its builds stop opening after 7 days.
+
+1. **Add your Apple ID to Xcode:** Xcode → Settings → Accounts → **+** → Apple ID.
+2. **Find your Team ID** (10 characters; it is not a secret). Xcode lists every team your accounts belong to, with its ID, name and type ("Personal Team" for a free Apple ID):
+
+   ```sh
+   defaults read com.apple.dt.Xcode IDEProvisioningTeamByIdentifier | grep -E 'teamID|teamName|teamType'
+   ```
+
+   Or pick your team once under the Parley target's *Signing & Capabilities*; *Development Team* in its build settings then shows the ID. (Reading it from an "Apple Development" certificate is unreliable when you have several.)
+
+   A free team can use the bundle id `com.scshafe.parley` only if no other team has registered it, and it can register at most 10 App IDs in 7 days. If Xcode refuses the id, set another one as `PARLEY_BUNDLE_ID` in your local spec.
+3. **Write the local spec** and generate the project from it:
+
+   ```sh
+   cp ios/project.local.yml.example ios/project.local.yml   # then set DEVELOPMENT_TEAM
+   xcodegen generate --spec ios/project.local.yml
+   open ios/Parley.xcodeproj
+   ```
+
+   `ios/project.local.yml` includes `project.yml` and adds only `DEVELOPMENT_TEAM` and `CODE_SIGN_STYLE: Automatic`. Generate from it every time; generating from `project.yml` makes an unsigned project again.
+4. **Plug the iPhone in** with a cable, unlock it, and tap **Trust** on "Trust This Computer?".
+5. **Turn on Developer Mode** on the iPhone: Settings → Privacy & Security → Developer Mode → on. The phone restarts; confirm **Turn On** after it does. The switch appears only once the phone has been connected to Xcode.
+6. **Run:** choose the iPhone as the run destination and press Run (⌘R). The first time, Xcode prepares the phone for development, which takes a few minutes.
+7. **Trust the developer:** the first launch is refused as an "Untrusted Developer". On the iPhone: Settings → General → VPN & Device Management → your Apple ID → **Trust**. Then press Run again.
+8. **Every 7 days,** a free team's profile expires and the app no longer opens. Plug the phone in and press Run again; the app's data is kept.
+
+On the phone, connect Tailscale, then set the relay in Parley's settings.
+
 ## Build and test
 
 ```sh

@@ -1,6 +1,10 @@
 # The Xcode project is generated from this spec by XcodeGen (version pinned in
 # .github/workflows/ci.yml); the .xcodeproj is not committed.
 #   xcodegen generate --spec ios/project.yml
+# It is unsigned (DEVELOPMENT_TEAM is empty): CI builds for the simulator. To
+# run on an iPhone, a git-ignored ios/project.local.yml includes this file and
+# adds your team (ios/project.local.yml.example; README "Install on your
+# iPhone with a free Apple ID").
 name: Parley
 options:
   bundleIdPrefix: com.scshafe
@@ -15,6 +19,8 @@ settings:
     CURRENT_PROJECT_VERSION: "1"
     DEVELOPMENT_TEAM: ""
     CODE_SIGN_STYLE: Automatic
+    # The app's bundle id; ios/project.local.yml can override it.
+    PARLEY_BUNDLE_ID: com.scshafe.parley
 packages:
   ParleyKit:
     path: ParleyKit
@@ -43,7 +49,7 @@ targets:
           NSAllowsLocalNetworking: true
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.scshafe.parley
+        PRODUCT_BUNDLE_IDENTIFIER: $(PARLEY_BUNDLE_ID)
         TARGETED_DEVICE_FAMILY: "1"
         ENABLE_PREVIEWS: YES
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: ""

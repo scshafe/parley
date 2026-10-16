@@ -11,3 +11,5 @@ ios/Parley/Info.plist
 ios/ParleyKit/.build/
 ios/ParleyKit/.swiftpm/
 ios/build/
+# Signing settings for one Mac (B12): see README "Install on your iPhone".
+ios/project.local.yml

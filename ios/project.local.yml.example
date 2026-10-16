@@ -1,0 +1,15 @@
+# Copy to ios/project.local.yml (git-ignored) on your Mac, put in your team,
+# and generate the project from it instead of project.yml:
+#   cp ios/project.local.yml.example ios/project.local.yml
+#   xcodegen generate --spec ios/project.local.yml
+# It includes project.yml and only adds this Mac's signing settings. A free
+# (personal) Apple ID team works; see README "Install on your iPhone with a
+# free Apple ID".
+include:
+  - project.yml
+settings:
+  base:
+    DEVELOPMENT_TEAM: ABCDE12345   # your Team ID: 10 characters, not a secret
+    CODE_SIGN_STYLE: Automatic
+    # Only if another team holds com.scshafe.parley:
+    # PARLEY_BUNDLE_ID: com.example.parley
