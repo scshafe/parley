@@ -12,7 +12,7 @@ the reply with follow-along highlighting.
 ## Layout
 
 - `relay/`: the relay (Python, uv, Starlette, SQLite). See [relay/README.md](relay/README.md).
-- `ios/`: the app. `ios/ParleyKit` is its logic as a Swift package. `ios/Parley` is the SwiftUI app and `ios/ParleyUITests` holds its UI tests. `ios/project.yml` is the XcodeGen spec for the Xcode project.
+- `ios/`: the app. `ios/ParleyKit` is its logic as a Swift package. `ios/Parley` is the SwiftUI app and `ios/ParleyUITests` holds its UI tests. `ios/project.yml` is the XcodeGen spec for the Xcode project. `ios/tools/make-app-icon.swift` draws the app icon (light, dark and tinted) into `ios/Parley/Assets.xcassets`; run it on a Mac only to change the icon.
 
 ## Run it locally
 
