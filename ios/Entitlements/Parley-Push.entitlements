@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyLists-1.0.dtd">
+<!-- Used only when PARLEY_PUSH = YES (ios/project.yml): a free (personal)
+     team cannot sign aps-environment, so default builds carry no entitlements.
+     PARLEY_APS_ENVIRONMENT is development for Debug, production for Release. -->
+<plist version="1.0">
+<dict>
+	<key>aps-environment</key>
+	<string>$(PARLEY_APS_ENVIRONMENT)</string>
+</dict>
+</plist>

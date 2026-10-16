@@ -260,6 +260,16 @@ public final class RelayClient: @unchecked Sendable {
         try fm.moveItem(at: tmp, to: destination)
     }
 
+    // MARK: Devices
+
+    /// Register this phone's APNs device token for "reply ready" pushes.
+    /// `environment` is the APNs environment the token belongs to: `sandbox`
+    /// (a development build) or `production`. Registering again is harmless.
+    public func registerDevice(token: String, environment: String) async throws {
+        let body = try JSONSerialization.data(withJSONObject: ["token": token, "environment": environment])
+        _ = try await data("/api/v1/devices", method: "POST", body: body)
+    }
+
     // MARK: Events
 
     /// The conversation's `turn.updated` events after `after`, as they happen.

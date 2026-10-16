@@ -94,6 +94,16 @@ final class RelayClientTests: XCTestCase {
         }
     }
 
+    func testRegisterDevicePostsTheTokenAndEnvironment() async throws {
+        StubProtocol.handler = { _ in (201, [:], Data(#"{"id":"d_1"}"#.utf8)) }
+        try await client.registerDevice(token: "ab01", environment: "sandbox")
+        let req = try XCTUnwrap(StubProtocol.seen.last)
+        XCTAssertEqual(req.httpMethod, "POST")
+        XCTAssertEqual(req.url?.path, "/api/v1/devices")
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: req.httpBody ?? Data()) as? [String: String])
+        XCTAssertEqual(body, ["token": "ab01", "environment": "sandbox"])
+    }
+
     func testUnknownStatesDecodeAsThinking() throws {
         let json = turnJSON.replacingOccurrences(of: "\"state\":\"ready\"", with: "\"state\":\"aligning\"")
         let turn = try ParleyJSON.decoder.decode(Turn.self, from: Data(json.utf8))
