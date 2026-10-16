@@ -295,7 +295,9 @@ is the reference. The app's P2 work is recorded separately.
   - Headers: `apns-topic: com.scshafe.parley`, `apns-push-type: alert`, `apns-priority: 10`, a 24-hour `apns-expiration`, and the turn id as `apns-collapse-id`.
   - The payload is P1's, ids only.
   - Each device's environment picks the host (`api.sandbox.push.apple.com` or `api.push.apple.com`), so a debug build and a release can both be registered.
-  - `410`, or `400 BadDeviceToken` / `Unregistered`, forgets the device. A refused provider token (`ExpiredProviderToken`, `InvalidProviderToken`) is renewed and the push retried once. Any other refusal is logged.
+  - `410` (`Unregistered`) forgets the device. `400 BadDeviceToken` does not: Apple also answers it for a token sent to the other environment's host, so the push is tried once on the other host, the device's environment is updated if that works, and the device is kept either way.
+  - A refused provider token (`ExpiredProviderToken`, `InvalidProviderToken`) is renewed and the push retried, at most once per push (not once per device). Any other refusal is logged, and one device's failure never stops the others.
+  - `PARLEY_APNS_ENV` accepts `development` as a name for the sandbox, as the API does.
 - **Optional, and off today.** Push needs a paid Apple Developer Program membership; the owner has a free Apple ID for now (P-Q1 is pending). Without the key id, the team id or the key file, push is off: the start-up line says so, and so does one log line when the state changes, not once per turn. The relay stays healthy, and the app learns that a turn is ready from its event stream.
   - The key file is read on use, so placing it later turns push on without a restart.
   - A push never fails a turn: a ready turn is marked pushed whatever APNs answers.

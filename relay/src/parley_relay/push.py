@@ -37,7 +37,9 @@ APNS_HOSTS = {
 PROVIDER_TOKEN_RENEW_SECONDS = 50 * 60
 PUSH_EXPIRATION_SECONDS = 24 * 3600
 # Answers that mean the device token is no good: forget the device.
-PRUNE_REASONS = frozenset({"BadDeviceToken", "Unregistered"})
+# Only these forget a device. BadDeviceToken is not one: Apple also answers it
+# for a token sent to the wrong environment's host.
+PRUNE_REASONS = frozenset({"Unregistered"})
 
 
 def reply_ready_payload(conversation_id: str, turn_id: str) -> dict:
@@ -102,8 +104,9 @@ class APNsSender:
     On: a key id, a team id and the ``.p8`` file. The file is read on use, so
     a key placed later turns push on without a restart. Each device's
     registered environment picks the host (``sandbox`` for a debug build,
-    ``production`` for a release). 410, or a 400 that says the token is bad,
-    forgets the device; a refused provider token is renewed once."""
+    ``production`` for a release). 410 (``Unregistered``) forgets the
+    device; ``BadDeviceToken`` tries the other environment's host once and
+    keeps the device; a refused provider token is renewed once per push."""
 
     def __init__(self, store: Any, *, key_file: str | None, key_id: str | None, team_id: str | None,
                  topic: str = "com.scshafe.parley", hosts: dict[str, str] | None = None,
@@ -186,46 +189,81 @@ class APNsSender:
             if key is None:
                 return
             body = json.dumps(reply_ready_payload(conversation_id, turn_id), separators=(",", ":")).encode()
+            push = _Push(key, body, turn_id)
             for device in self.store.devices():
-                await self._send(key, device, body, turn_id)
+                try:
+                    await self._send(push, device)
+                except Exception:  # noqa: BLE001 - one bad device must not stop the others
+                    log.exception("push to device %s for turn %s failed", device.get("id"), turn_id)
         except Exception:  # noqa: BLE001 - a push never fails a turn
             log.exception("push for turn %s failed", turn_id)
 
-    async def _send(self, key: ec.EllipticCurvePrivateKey, device: dict, body: bytes, turn_id: str) -> None:
-        did = device["id"]
-        renewed = False
+    async def _post(self, push: _Push, environment: str, token: str) -> tuple[int, str, httpx.Response]:
+        """One POST; a refused provider token is renewed and the POST retried,
+        at most once per push (not once per device)."""
         while True:
             headers = {
-                "authorization": f"bearer {self._provider_token(key, renew=renewed)}",
+                "authorization": f"bearer {self._provider_token(push.key, renew=push.renew_now)}",
                 "apns-topic": self.topic,
                 "apns-push-type": "alert",
                 "apns-priority": "10",
                 "apns-expiration": str(int(self._clock()) + PUSH_EXPIRATION_SECONDS),
-                "apns-collapse-id": turn_id,
+                "apns-collapse-id": push.turn_id,
                 "content-type": "application/json",
             }
-            try:
-                resp = await self._client(device["environment"]).post(f"/3/device/{device['token']}", content=body,
-                                                                      headers=headers)
-            except httpx.HTTPError as exc:
-                log.warning("push to device %s for turn %s: %s", did, turn_id, type(exc).__name__)
-                return
+            push.renew_now = False
+            resp = await self._client(environment).post(f"/3/device/{token}", content=push.body, headers=headers)
             reason = ""
             if resp.status_code != 200:
                 try:
                     reason = str(resp.json().get("reason") or "")
                 except (ValueError, AttributeError):
                     reason = ""
-            if resp.status_code == 403 and reason in ("ExpiredProviderToken", "InvalidProviderToken") and not renewed:
-                renewed = True
+            if (resp.status_code == 403 and reason in ("ExpiredProviderToken", "InvalidProviderToken")
+                    and not push.renewed):
+                push.renewed = push.renew_now = True
                 continue
-            break
-        self.store.record_push(did, resp.status_code)
-        if resp.status_code == 200:
+            return resp.status_code, reason, resp
+
+    async def _send(self, push: _Push, device: dict) -> None:
+        did, env = device["id"], device["environment"]
+        try:
+            status, reason, resp = await self._post(push, env, device["token"])
+            if status == 400 and reason == "BadDeviceToken":
+                # Apple's answer for a token sent to the other environment's host (a
+                # debug build registered as production, or the reverse): try that
+                # host once, and keep the device either way.
+                other = "production" if env == "sandbox" else "sandbox"
+                log.warning("push to device %s: BadDeviceToken on %s, trying %s once (an environment mismatch?)",
+                            did, env, other)
+                status2, reason2, resp2 = await self._post(push, other, device["token"])
+                if status2 == 200:
+                    self.store.register_device(device["token"], other)
+                    log.info("device %s is a %s device: its environment is updated", did, other)
+                    env, status, reason, resp = other, status2, reason2, resp2
+                elif status2 not in (400, 410):
+                    status, reason = status2, reason2
+        except httpx.HTTPError as exc:
+            log.warning("push to device %s for turn %s: %s", did, push.turn_id, type(exc).__name__)
+            return
+        self.store.record_push(did, status)
+        if status == 200:
             self.sent += 1
-            log.info("push sent to device %s for turn %s (apns-id %s)", did, turn_id, resp.headers.get("apns-id", "-"))
-        elif resp.status_code == 410 or (resp.status_code == 400 and reason in PRUNE_REASONS):
+            log.info("push sent to device %s for turn %s (apns-id %s)", did, push.turn_id,
+                     resp.headers.get("apns-id", "-"))
+        elif status == 410 or reason in PRUNE_REASONS:
             self.store.delete_device(did)
-            log.info("push to device %s refused (%d %s): device forgotten", did, resp.status_code, reason or "-")
+            log.info("push to device %s refused (%d %s): device forgotten", did, status, reason or "-")
         else:
-            log.warning("push to device %s for turn %s refused: %d %s", did, turn_id, resp.status_code, reason or "-")
+            log.warning("push to device %s for turn %s refused: %d %s", did, push.turn_id, status, reason or "-")
+
+
+@dataclass
+class _Push:
+    """One reply-ready push, sent to every device."""
+
+    key: ec.EllipticCurvePrivateKey
+    body: bytes
+    turn_id: str
+    renewed: bool = False  # the provider token was renewed once already for this push
+    renew_now: bool = False

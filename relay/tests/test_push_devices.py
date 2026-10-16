@@ -37,6 +37,12 @@ class Devices:
     def record_push(self, did, status):
         self.pushes.append((did, status))
 
+    def register_device(self, token, environment):
+        for d in self.rows:
+            if d["token"] == token:
+                d["environment"] = environment
+        return next(d for d in self.rows if d["token"] == token), False
+
 
 @pytest.fixture
 def key():
@@ -105,9 +111,27 @@ async def test_an_expired_provider_token_is_renewed_once(tmp_path, key, apns):
     await s.aclose()
 
 
+async def test_the_provider_token_is_renewed_once_per_push_not_per_device(tmp_path, key, apns):
+    store = Devices((TOKEN_A, "sandbox"), (TOKEN_B, "sandbox"))
+    s = sender(store, write_key(tmp_path / "k.p8", key), apns)
+    apns.expire_next = 10
+    await s.reply_ready("c", "t")
+    assert len(apns.requests) == 3  # A, A renewed, then B without another renewal
+    assert store.pushes == [("d_0", 403), ("d_1", 403)]
+    await s.aclose()
+
+
+async def test_one_broken_device_does_not_stop_the_others(tmp_path, key, apns):
+    store = Devices(("not a\nvalid token", "sandbox"), (TOKEN_B, "sandbox"))
+    s = sender(store, write_key(tmp_path / "k.p8", key), apns)
+    await s.reply_ready("c", "t")
+    assert [r["device"] for r in apns.requests] == [TOKEN_B]
+    await s.aclose()
+
+
 @pytest.mark.parametrize(("status", "reason", "pruned"), [
     (410, "Unregistered", True),
-    (400, "BadDeviceToken", True),
+    (400, "BadDeviceToken", False),  # also Apple's answer for the wrong environment's host
     (400, "PayloadTooLarge", False),
     (429, "TooManyRequests", False),
 ])
@@ -118,6 +142,23 @@ async def test_bad_device_tokens_are_forgotten(tmp_path, key, apns, status, reas
     await s.reply_ready("c", "t")
     assert [d["token"] for d in store.rows] == ([TOKEN_B] if pruned else [TOKEN_A, TOKEN_B])
     await s.aclose()
+
+
+async def test_bad_device_token_tries_the_other_environment_once(tmp_path, key, apns):
+    prod = await FakeAPNs(key.public_key(), KEY_ID, TEAM_ID).start()
+    try:
+        store = Devices((TOKEN_A, "sandbox"), (TOKEN_B, "sandbox"))
+        apns.answers[TOKEN_A] = (400, "BadDeviceToken")  # A is really a production device
+        apns.answers[TOKEN_B] = (400, "BadDeviceToken")
+        prod.answers[TOKEN_B] = (400, "BadDeviceToken")  # B is bad on both: kept, logged
+        s = sender(store, write_key(tmp_path / "k.p8", key), apns, sandbox=apns.url, production=prod.url)
+        await s.reply_ready("c", "t")
+        assert [r["device"] for r in prod.requests] == [TOKEN_A, TOKEN_B]
+        assert [(d["token"], d["environment"]) for d in store.rows] == [(TOKEN_A, "production"), (TOKEN_B, "sandbox")]
+        assert store.pushes == [("d_0", 200), ("d_1", 400)]
+        await s.aclose()
+    finally:
+        await prod.stop()
 
 
 async def test_each_device_environment_picks_its_host(tmp_path, key, apns):
@@ -191,7 +232,7 @@ async def test_device_registration(relay):
         assert again.status_code == 200 and again.json()["id"] == dev["id"]
         assert again.json()["environment"] == "production"
         assert (await c.post("/api/v1/devices", json={"token": TOKEN_B}, headers=AUTH)).json()["environment"] == "sandbox"
-        for bad in ({"token": "xyz"}, {"token": TOKEN_A, "environment": "staging"}, {}):
+        for bad in ({"token": "xyz"}, {"token": TOKEN_A + "\n"}, {"token": TOKEN_A, "environment": "staging"}, {}):
             assert (await c.post("/api/v1/devices", json=bad, headers=AUTH)).status_code == 422
         listed = (await c.get("/api/v1/devices", headers=AUTH)).json()
         assert len(listed["devices"]) == 2 and TOKEN_A not in json.dumps(listed)
@@ -240,3 +281,13 @@ async def test_a_push_that_raises_does_not_fail_the_turn(relay):
     await relay.pipeline.stop()
     t = relay.store.get_turn(turn["id"])
     assert t["state"] == "ready" and t["pushed"] == 1
+
+
+def test_apns_env_development_is_the_sandbox(tmp_path):
+    env = {"PARLEY_DATA_DIR": str(tmp_path / "data"), "PARLEY_OIDC_ISSUER": "https://id.example.ts.net",
+           "PARLEY_OWNER_SUBJECT": "o", "PARLEY_VOICELAB_URL": "https://voice-lab.example.ts.net",
+           "PARLEY_AGENT": "fake", "PARLEY_APNS_ENV": "development"}
+    s = Settings.from_env(env=env)
+    r = build(s)
+    assert s.apns_env == "sandbox"
+    r.store.close()

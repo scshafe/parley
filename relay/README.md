@@ -88,7 +88,7 @@ its secret files are in `/run/secrets`.
 | `PARLEY_APNS_KEY_FILE` | the APNs auth key (`.p8`): `/run/secrets/apns-key.p8`. Optional: push is off until it and the two ids are set |
 | `PARLEY_APNS_KEY_ID`, `PARLEY_APNS_TEAM_ID` | the key's id and the Apple Developer team id (not secret) |
 | `PARLEY_APNS_TOPIC` | the app's bundle id (default `com.scshafe.parley`) |
-| `PARLEY_APNS_ENV` | `sandbox` (default) or `production`, for a device that registers without an environment |
+| `PARLEY_APNS_ENV` | `sandbox` (default; `development` is the same) or `production`, for a device that registers without an environment |
 | `PARLEY_POLL_INTERVAL` | seconds between status polls, the webhook's backstop (default 15) |
 | `PARLEY_MAX_SENTENCE_CHARS` | the voice release's one-pass sentence limit, if known |
 

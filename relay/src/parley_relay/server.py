@@ -239,8 +239,10 @@ def _build_real(s: Settings) -> Relay:
     agent: AgentAdapter = FakeAgent() if s.agent == "fake" else _openclaw(s)
     if isinstance(agent, OpenClawAgent):
         closers.append(agent.aclose)
+    if s.apns_env == "development":  # the entitlement's word for the sandbox, as the API accepts it
+        s.apns_env = "sandbox"
     if s.apns_env not in ("sandbox", "production"):
-        raise ConfigError("PARLEY_APNS_ENV is sandbox or production")
+        raise ConfigError("PARLEY_APNS_ENV is sandbox (or development) or production")
     store = Store(s.data_dir)
     push = APNsSender(store, key_file=s.apns_key_file, key_id=s.apns_key_id, team_id=s.apns_team_id,
                       topic=s.apns_topic)

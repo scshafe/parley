@@ -48,7 +48,7 @@ WebhookSecretSource = Callable[[], "WebhookSecret | None"]
 log = logging.getLogger("parley.api")
 
 _CLIENT_TURN_ID = re.compile(r"^[A-Za-z0-9._:-]{1,100}$")
-_DEVICE_TOKEN = re.compile(r"^[0-9a-fA-F]{32,200}$")
+_DEVICE_TOKEN = re.compile(r"[0-9a-fA-F]{32,200}")  # fullmatch: no trailing newline
 # The app's aps-environment entitlement says development or production; APNs
 # calls the development host the sandbox.
 _ENVIRONMENTS = {"sandbox": "sandbox", "development": "sandbox", "production": "production"}
@@ -218,7 +218,7 @@ def build_app(
         if body is None:
             return error(422, "invalid_request", "The body is not a JSON object.")
         token, env = body.get("token"), body.get("environment", default_environment)
-        if not isinstance(token, str) or not _DEVICE_TOKEN.match(token):
+        if not isinstance(token, str) or not _DEVICE_TOKEN.fullmatch(token):
             return error(422, "invalid_request", "token is the APNs device token in hex.")
         if not isinstance(env, str) or env not in _ENVIRONMENTS:
             return error(422, "invalid_request", "environment is sandbox (development) or production.")
