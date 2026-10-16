@@ -24,6 +24,12 @@ tailscale = true                     # the node identity (always, with a sidecar
 # The relay's record (SQLite, reply audio, timings), its secret files and the
 # door's client and cookie secrets. state/data and state/secrets belong to the
 # relay's uid; stack-backup reads them through its one-shot read-only container.
+# The live database (relay.sqlite3, WAL) can be torn in a byte copy, so the
+# relay keeps a consistent copy, state/data/backup/relay.sqlite3 (SQLite's
+# online backup, at most 5 minutes old, and at every stop): a restore removes
+# relay.sqlite3, -wal and -shm, and the relay starts from that copy
+# (docs/DESIGN.md, "P2 build decisions: the relay"). Audio and timings are
+# written whole (temp file + rename).
 paths = ["state/data", "state/secrets", ".env"]
 
 [env]

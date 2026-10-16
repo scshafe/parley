@@ -243,7 +243,7 @@ is the reference. The app's P2 work is recorded separately.
 **Deploy.**
 
 - **The lane.** `dev.toml [deploy]`: the runner lane, app layout, on the PC, node `parley` behind the Pocket ID door, verified on GitHub's hosted runner (the repository is public). `.github/workflows/deploy.yml` is scshafe-dev's, with the same uv setup as `ci.yml`. A merge to `main` deploys once the owner has registered the PC's `parley-prod` runner; until then the deploy job waits for a runner.
-- **The image.** The root `Dockerfile` builds `relay/` with uv 0.12.21 (`uv sync --frozen --no-dev`) on the fleet's pinned `python:3.12-slim`, into `/opt/venv`. It runs as uid:gid `10001:10001`, never root. The healthcheck is the venv's Python (`urllib`), because the image has no curl. `.dockerignore` keeps the iOS app and local state out of the build.
+- **The image.** The root `Dockerfile` builds `relay/` with uv 0.12.21 (`uv sync --frozen --no-dev`) on the fleet's pinned `python:3.12-slim`, into `/opt/venv`. The build backend is uv's own, pinned (`uv_build==0.12.21`, no dependencies), so nothing the build fetches is unpinned. It runs as uid:gid `10001:10001`, never root. The healthcheck is the venv's Python (`urllib`), because the image has no curl. `.dockerignore` keeps the iOS app and local state out of the build.
 - **The stack** (`deploy/stack/`). voice-journey's door layout: `ts-parley` (Serve on 443) → `oauth2-proxy` v7.15.3 → the relay, on the subnets `10.253.92.0/29` (door) and `10.253.92.8/29` (upstream), plus `egress`. Every image is pinned by digest, or is the relay's own pinned build.
   - The door accepts the app's Pocket ID access token as a bearer (an extra JWT issuer whose audience is `parley-ios`) and passes it through unchanged. It sets `X-Forwarded-User` after stripping any copy the caller sent. `/api/` answers `401`, never a login redirect.
   - `GET /healthz` (the deploy witness) and `POST /hooks/voice-lab` (signature-checked by the relay) pass without a session.
@@ -255,6 +255,9 @@ is the reference. The app's P2 work is recorded separately.
   - required: `TS_AUTHKEY`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `ID_TAILNET_IP`, `VOICE_LAB_TAILNET_IP`, `OPENCLAW_TAILNET_IP` and `PARLEY_OWNER_SUBJECT`;
   - generated: `OAUTH2_PROXY_COOKIE_SECRET`;
   - owner, optional: `PARLEY_APNS_KEY_ID`, `PARLEY_APNS_TEAM_ID`, `PARLEY_APNS_ENV` and `PARLEY_OPENCLAW_AGENT_ID`.
+- **The database in a backup.** The stack's backup is a byte copy (tar) of `state/data`, and the live SQLite database is in WAL mode, so its copy can be torn. The relay therefore keeps a consistent copy, `state/data/backup/relay.sqlite3`, made with SQLite's online backup API into a temporary file and renamed into place. It is refreshed every 5 minutes when anything was written, and once more whenever the relay stops (a deploy's or a restart's stop). Audio and timings are written whole (a temporary file, then a rename).
+  - **Restoring:** extract the backup, delete `relay.sqlite3`, `relay.sqlite3-wal` and `relay.sqlite3-shm` from `state/data`, and start the relay. A relay that finds no database but finds the copy starts from the copy, and logs that it did.
+  - The pre-deploy backup runs while the old relay is still up, so the copy can be up to 5 minutes behind it. infra's rules leave this stack no other route: it has no host binds and no database container. A turn in flight when the copy was taken resumes from its last recorded state (P1's restart rule).
 
 ## Decisions (owner, 2026-10-15: the recommendations accepted)
 
