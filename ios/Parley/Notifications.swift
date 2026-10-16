@@ -82,7 +82,8 @@ final class Notifier {
         case offInThisBuild
         case notRegistered
         case registering
-        case registered
+        /// Registered with the relay; `relayCanPush` is false until the relay has an APNs key.
+        case registered(relayCanPush: Bool)
         case failed(String)
     }
 
@@ -90,11 +91,22 @@ final class Notifier {
         (Bundle.main.object(forInfoDictionaryKey: "ParleyPushEnabled") as? String)?.uppercased() == "YES"
 
     /// The relay's name for the APNs environment this build's tokens belong
-    /// to: `sandbox` for a development build, `production` for a release.
+    /// to, from the embedded provisioning profile: `sandbox` for a
+    /// development-signed build, `production` for one with no profile (App
+    /// Store, TestFlight) or a distribution profile. The simulator is sandbox.
     static let relayEnvironment: String = {
-        let aps = Bundle.main.object(forInfoDictionaryKey: "ParleyAPSEnvironment") as? String
-        return aps == "production" ? "production" : "sandbox"
+        #if targetEnvironment(simulator)
+        return "sandbox"
+        #else
+        let profile = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision")
+            .flatMap { try? Data(contentsOf: $0) }
+        return APSEnvironment.relayName(profile: profile)
+        #endif
     }()
+
+    /// A watched turn is dropped after this long: the relay gives up on a
+    /// turn after 30 minutes.
+    static let watchLimit: TimeInterval = 35 * 60
 
     private(set) var authorization: UNAuthorizationStatus = .notDetermined
     private(set) var pushState: PushState = Notifier.pushEnabledInBuild ? .notRegistered : .offInThisBuild
@@ -104,8 +116,8 @@ final class Notifier {
     @ObservationIgnored weak var model: AppModel?
     @ObservationIgnored private var deviceToken: String?
     @ObservationIgnored private var registeredFor: String?
-    /// Unfinished turns the app has seen: turn id -> conversation id.
-    @ObservationIgnored private var watched: [String: String] = [:]
+    /// Unfinished turns the app has seen, by turn id.
+    @ObservationIgnored private var watched: [String: (conversationID: String, since: Date)] = [:]
     @ObservationIgnored private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     @ObservationIgnored private var backgroundPoll: Task<Void, Never>?
     @ObservationIgnored private var pollGeneration = 0
@@ -141,19 +153,37 @@ final class Notifier {
         pushState = .failed(message)
     }
 
-    /// Send the device token to the relay, once per relay and sign-in.
+    /// Send the device token to the relay, once per relay and sign-in, and
+    /// keep the device id the relay answers for that relay.
     func registerWithRelay() async {
         guard Self.pushEnabledInBuild, let token = deviceToken, let model, let client = model.client else { return }
         let key = model.connectionKey + "|" + token
         if registeredFor == key { return }
         pushState = .registering
         do {
-            try await client.registerDevice(token: token, environment: Self.relayEnvironment)
+            let device = try await client.registerDevice(token: token, environment: Self.relayEnvironment)
+            DeviceIDs.set(device.id, for: model.relayURLString)
             registeredFor = key
-            pushState = .registered
+            pushState = .registered(relayCanPush: device.push ?? true)
         } catch {
             pushState = .failed(error.localizedDescription)
         }
+    }
+
+    /// Stop pushes from a relay: delete this phone's device there (with that
+    /// relay's client, so before its credentials go). Best effort.
+    func unregister(from relay: String, using client: RelayClient?) async {
+        guard let id = DeviceIDs.get(relay) else { return }
+        if let client, (try? await client.unregisterDevice(id: id)) == nil { return }  // keep the id to retry
+        DeviceIDs.set(nil, for: relay)
+        registeredFor = nil
+        if Self.pushEnabledInBuild { pushState = .notRegistered }
+    }
+
+    /// The relay or the sign-in changed: what was watched belongs to the old one.
+    func connectionChanged() {
+        watched.removeAll()
+        endBackgroundWork()
     }
 
     func presentationOptions(for route: NotificationRoute?) -> UNNotificationPresentationOptions {
@@ -165,12 +195,13 @@ final class Notifier {
 
     /// Every turn the app sees comes through here.
     func observe(_ turn: ParleyKit.Turn) {
+        pruneWatched()
         guard turn.state.isFinished else {
-            watched[turn.id] = turn.conversationId
+            if watched[turn.id] == nil { watched[turn.id] = (turn.conversationId, Date()) }
             return
         }
         guard watched.removeValue(forKey: turn.id) != nil, turn.state == .ready,
-              UIApplication.shared.applicationState != .active, pushState != .registered, isAllowed else { return }
+              UIApplication.shared.applicationState != .active, !pushWillNotify, isAllowed else { return }
         let content = UNMutableNotificationContent()
         content.body = "Reply ready"
         content.sound = .default
@@ -179,7 +210,16 @@ final class Notifier {
         UNUserNotificationCenter.current().add(request) { _ in }
     }
 
+    /// The relay will push this turn itself: no local notification as well.
+    private var pushWillNotify: Bool { pushState == .registered(relayCanPush: true) }
+
+    private func pruneWatched() {
+        let cutoff = Date().addingTimeInterval(-Self.watchLimit)
+        watched = watched.filter { $0.value.since > cutoff }
+    }
+
     func enteredBackground() {
+        pruneWatched()
         guard !watched.isEmpty, backgroundPoll == nil, model?.client != nil else { return }
         backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "parley.turns") { [weak self] in
             MainActor.assumeIsolated { self?.endBackgroundWork() }
@@ -190,8 +230,9 @@ final class Notifier {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(3))
                 guard let self, !Task.isCancelled, !self.watched.isEmpty, let client = self.model?.client else { break }
-                for (turnID, conversationID) in self.watched {
-                    if let turn = try? await client.turn(conversationID: conversationID, turnID: turnID) {
+                self.pruneWatched()
+                for (turnID, entry) in self.watched {
+                    if let turn = try? await client.turn(conversationID: entry.conversationID, turnID: turnID) {
                         self.observe(turn)
                     }
                 }
@@ -213,5 +254,20 @@ final class Notifier {
             UIApplication.shared.endBackgroundTask(backgroundTask)
             backgroundTask = .invalid
         }
+    }
+}
+
+/// The device id each relay gave this phone, by relay URL (UserDefaults).
+enum DeviceIDs {
+    private static let key = "pushDeviceIDs"
+
+    static func get(_ relay: String) -> String? {
+        (UserDefaults.standard.dictionary(forKey: key) as? [String: String])?[relay]
+    }
+
+    static func set(_ id: String?, for relay: String) {
+        var all = (UserDefaults.standard.dictionary(forKey: key) as? [String: String]) ?? [:]
+        all[relay] = id
+        UserDefaults.standard.set(all, forKey: key)
     }
 }

@@ -87,6 +87,12 @@ final class AppModel {
 
     /// Save new settings: the URL to UserDefaults, the dev token to the Keychain.
     func update(relayURL: String, devToken: String) {
+        if relayURL != relayURLString {
+            // Push stops at the old relay, with its own credentials.
+            let oldRelay = relayURLString
+            let oldClient = client
+            Task { await notifier.unregister(from: oldRelay, using: oldClient) }
+        }
         relayURLString = relayURL
         self.devToken = devToken
         if !AppModel.isUITesting {
@@ -173,7 +179,10 @@ final class AppModel {
         apply(.signedIn(tokens.account))
     }
 
+    /// Sign out: first stop push at the relay (that needs the token), then
+    /// forget the tokens.
     func signOut() async {
+        if authMode == .signedIn { await notifier.unregister(from: relayURLString, using: client) }
         await session?.signOut()
         apply(.signedOut)
     }

@@ -107,6 +107,14 @@ public struct Conversation: Codable, Hashable, Identifiable, Sendable {
     }
 }
 
+/// The relay's answer to a device registration. `push` is whether the relay
+/// can send pushes now (false until it has an APNs key).
+public struct DeviceRegistration: Codable, Equatable, Sendable {
+    public var id: String
+    public var environment: String?
+    public var push: Bool?
+}
+
 struct ConversationList: Codable {
     var conversations: [Conversation]
 }

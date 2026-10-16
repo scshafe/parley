@@ -197,7 +197,7 @@ struct SettingsView: View {
         case .offInThisBuild: return "Off in this build"
         case .notRegistered: return "Not registered yet"
         case .registering: return "Registering…"
-        case .registered: return "On"
+        case .registered(let relayCanPush): return relayCanPush ? "On" : "Registered (the relay cannot push yet)"
         case .failed: return "Not registered"
         }
     }

@@ -95,13 +95,41 @@ final class RelayClientTests: XCTestCase {
     }
 
     func testRegisterDevicePostsTheTokenAndEnvironment() async throws {
-        StubProtocol.handler = { _ in (201, [:], Data(#"{"id":"d_1"}"#.utf8)) }
-        try await client.registerDevice(token: "ab01", environment: "sandbox")
+        StubProtocol.handler = { _ in
+            (201, [:], Data(#"{"id":"d_1","environment":"sandbox","created_at":"a","updated_at":"a","last_push_at":null,"push":false}"#.utf8))
+        }
+        let device = try await client.registerDevice(token: "ab01", environment: "sandbox")
+        XCTAssertEqual(device, DeviceRegistration(id: "d_1", environment: "sandbox", push: false))
         let req = try XCTUnwrap(StubProtocol.seen.last)
         XCTAssertEqual(req.httpMethod, "POST")
         XCTAssertEqual(req.url?.path, "/api/v1/devices")
         let body = try XCTUnwrap(JSONSerialization.jsonObject(with: req.httpBody ?? Data()) as? [String: String])
         XCTAssertEqual(body, ["token": "ab01", "environment": "sandbox"])
+    }
+
+    func testUnregisterDeviceDeletesAndTreatsAnUnknownIdAsDone() async throws {
+        StubProtocol.handler = { _ in (204, [:], Data()) }
+        try await client.unregisterDevice(id: "d_1")
+        XCTAssertEqual(StubProtocol.seen.last?.httpMethod, "DELETE")
+        XCTAssertEqual(StubProtocol.seen.last?.url?.path, "/api/v1/devices/d_1")
+        StubProtocol.handler = { _ in (404, [:], Data(#"{"error":{"code":"not_found","detail":""}}"#.utf8)) }
+        try await client.unregisterDevice(id: "d_gone")
+    }
+
+    func testTheAPNsEnvironmentComesFromTheProvisioningProfile() {
+        func profile(_ aps: String?) -> Data {
+            let ent = aps.map { "<key>aps-environment</key><string>\($0)</string>" } ?? ""
+            let plist = """
+            <?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Name</key><string>x</string>\
+            <key>Entitlements</key><dict>\(ent)</dict></dict></plist>
+            """
+            return Data([0x30, 0x82, 0x01]) + Data(plist.utf8) + Data([0x00, 0xA0])  // inside a CMS envelope
+        }
+        XCTAssertEqual(APSEnvironment.relayName(profile: profile("development")), "sandbox")
+        XCTAssertEqual(APSEnvironment.relayName(profile: profile("production")), "production")
+        XCTAssertEqual(APSEnvironment.relayName(profile: nil), "production")
+        XCTAssertNil(APSEnvironment.apsEnvironment(inProfile: profile(nil)))
+        XCTAssertNil(APSEnvironment.apsEnvironment(inProfile: Data("garbage".utf8)))
     }
 
     func testUnknownStatesDecodeAsThinking() throws {

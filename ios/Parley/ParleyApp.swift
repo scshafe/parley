@@ -29,6 +29,7 @@ struct RootView: View {
     @State private var path = NavigationPath()
     @State private var showSettings = false
     @State private var wasInBackground = false
+    @State private var openTask: Task<Void, Never>?
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -61,11 +62,16 @@ struct RootView: View {
             }
         }
         // The device token goes to the relay, again when the relay or the sign-in changes.
-        .task(id: model.connectionKey) { await model.notifier.registerWithRelay() }
+        .task(id: model.connectionKey) {
+            model.notifier.connectionChanged()
+            await model.notifier.registerWithRelay()
+        }
         .onChange(of: model.pendingRoute, initial: true) { _, route in
             guard let route else { return }
             model.clearPendingRoute()
-            Task { await open(route) }
+            // A newer tap wins: the older one's fetch must not push its reader.
+            openTask?.cancel()
+            openTask = Task { await open(route) }
         }
     }
 }
@@ -80,7 +86,7 @@ extension RootView {
         path = fresh
         guard let turnID = route.turnID, let client = model.client,
               let turn = try? await client.turn(conversationID: route.conversationID, turnID: turnID),
-              turn.state == .ready else { return }
+              turn.state == .ready, !Task.isCancelled else { return }
         path.append(ReaderRoute(turn: turn))
     }
 }
