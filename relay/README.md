@@ -101,3 +101,18 @@ P1's static bearer (`parley-dev`, or `PARLEY_TOKEN_FILE` / `PARLEY_TOKEN`).
 ```sh
 uv run pytest        # network-free; also run by ../scripts/verify-linux
 ```
+
+One opt-in live test checks the OpenClaw gateway's `/v1/responses` contract
+(OpenClaw 2026.9.2, password mode), and is skipped unless both variables are
+set. On the PC, once the endpoint is enabled and the relay's password file is
+placed, the password is piped in and never written elsewhere:
+
+```sh
+sudo cat /srv/stacks/parley/state/secrets/openclaw-gateway-token \
+  | PARLEY_LIVE_OPENCLAW_URL=https://openclaw.colobus-stargazer.ts.net \
+    PARLEY_LIVE_OPENCLAW_TOKEN_FILE=/dev/stdin \
+    uv run pytest -s tests/test_openclaw_live.py
+```
+
+`PARLEY_LIVE_OPENCLAW_AGENT_ID` picks a dedicated agent. The test prints which
+response shape the gateway sent (`output_text` or `output[].content[]`).
