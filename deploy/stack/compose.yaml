@@ -126,9 +126,6 @@ services:
     user: "65532:65532"  # the image's own nonroot user, spelled out
     depends_on: [ts-parley, parley]
     read_only: true
-    # X-Forwarded-* count only from the sidecar, its one peer on the door network
-    # (a flag: --trusted-proxy-ip has no env mapping).
-    command: ["--trusted-proxy-ip=10.253.92.2/32"]
     environment:
       OAUTH2_PROXY_PROVIDER: oidc
       OAUTH2_PROXY_PROVIDER_DISPLAY_NAME: "Pocket ID"
@@ -143,7 +140,11 @@ services:
       OAUTH2_PROXY_COOKIE_SECURE: "true"
       OAUTH2_PROXY_COOKIE_EXPIRE: 12h
       OAUTH2_PROXY_HTTP_ADDRESS: 10.253.92.3:4180
-      OAUTH2_PROXY_REVERSE_PROXY: "true"
+      # Off: tailscale serve passes the caller's X-Forwarded-* through, and in
+      # reverse-proxy mode X-Forwarded-Uri picks the path the skip-auth routes
+      # match (X-Forwarded-Uri: /healthz let any GET past the door). The
+      # redirect URL is absolute, so nothing here needs forwarded headers.
+      OAUTH2_PROXY_REVERSE_PROXY: "false"
       OAUTH2_PROXY_UPSTREAMS: http://10.253.92.11:8080
       OAUTH2_PROXY_SKIP_PROVIDER_BUTTON: "true"
       # The iPhone app: a Pocket ID access token (RS256 JWT, aud = parley-ios)
