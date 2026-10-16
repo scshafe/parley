@@ -3,14 +3,20 @@ import SwiftData
 import SwiftUI
 
 /// A conversation: its turns, each with its state and a play button, and the
-/// composer. Turn states arrive on the relay's event stream; when the stream is
-/// down the view polls while a turn is unfinished.
+/// composer (typed, or dictated with the mic). Turn states arrive on the
+/// relay's event stream; when the stream is down the view polls while a turn
+/// is unfinished.
+///
+/// A new conversation from the Action Button has no id yet: the relay makes it
+/// when its first message is sent, and the view listens from the start.
 struct ConversationView: View {
-    let conversationID: String
     let title: String
+    let listenOnOpen: Bool
     @Binding var path: NavigationPath
     @Environment(AppModel.self) private var model
+    @Environment(Dictation.self) private var dictation
     @Environment(\.modelContext) private var context
+    @State private var conversationID: String?
     @State private var turns: [ParleyKit.Turn] = []
     @State private var lastEventID = 0
     @State private var draft = ""
@@ -18,7 +24,21 @@ struct ConversationView: View {
     @State private var pendingClientTurnID: String?
     @State private var errorText: String?
     @State private var liveTitle: String?
+    /// Who this view is, for the dictation it starts.
+    @State private var dictationOwner = UUID()
+    /// The draft as it was when dictation started; the words go after it.
+    @State private var draftBeforeDictation = ""
+    @State private var listenedOnOpen = false
     @FocusState private var composerFocused: Bool
+
+    init(conversationID: String?, title: String, listenOnOpen: Bool = false, path: Binding<NavigationPath>) {
+        _conversationID = State(initialValue: conversationID)
+        self.title = title
+        self.listenOnOpen = listenOnOpen
+        _path = path
+    }
+
+    private var isMyDictation: Bool { dictation.isActive && dictation.ownerID == dictationOwner }
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -53,29 +73,128 @@ struct ConversationView: View {
                 if let id = turns.last?.id { withAnimation { proxy.scrollTo(id, anchor: .bottom) } }
             }
         }
-        .safeAreaInset(edge: .bottom) { composer }
+        .safeAreaInset(edge: .bottom) {
+            VStack(spacing: 0) {
+                if isMyDictation { listeningBar }
+                composer
+            }
+        }
         .navigationTitle(liveTitle ?? title)
         .navigationBarTitleDisplayMode(.inline)
         // Reconnects when the relay, the sign-in or its access token changes,
-        // and when the app comes back to the foreground.
-        .task(id: model.streamKey) { await follow() }
-        .onAppear { model.notifier.visibleConversationID = conversationID }
+        // when the app comes back to the foreground, and once a new
+        // conversation has its id.
+        .task(id: "\(model.streamKey)|\(conversationID ?? "")") { await follow() }
+        .onChange(of: dictation.transcript) { _, words in
+            if isMyDictation && !words.isEmpty { draft = LiveTranscript.join(draftBeforeDictation, words) }
+        }
+        .onChange(of: conversationID) { _, id in model.notifier.visibleConversationID = id }
+        .onAppear {
+            model.notifier.visibleConversationID = conversationID
+            if listenOnOpen && !listenedOnOpen {
+                listenedOnOpen = true
+                startDictation(autoSend: true)
+            }
+        }
         .onDisappear {
             if model.notifier.visibleConversationID == conversationID { model.notifier.visibleConversationID = nil }
+            dictation.ownerDisappeared(dictationOwner)
         }
+    }
+
+    // MARK: Dictation
+
+    private var listeningBar: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "waveform")
+                .font(.title3)
+                .foregroundStyle(.red)
+                .symbolEffect(.variableColor.iterative, isActive: dictation.isListening)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(listeningTitle)
+                    .font(.subheadline.weight(.semibold))
+                Text(listeningHint)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("listeningIndicator")
+            Spacer()
+            Button("Cancel", role: .cancel) { dictation.cancel(); draft = draftBeforeDictation }
+                .accessibilityIdentifier("dictationCancel")
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+        .background(.bar)
+    }
+
+    private var listeningTitle: String {
+        if let status = dictation.status { return status }
+        switch dictation.machine.phase {
+        case .starting: return "Starting the microphone…"
+        case .finishing(let send): return send ? "Sending…" : "Finishing…"
+        default: return "Listening…"
+        }
+    }
+
+    private var listeningHint: String {
+        dictation.autoSend
+            ? "Sends when you pause. Press the Action Button or Send to send now."
+            : "Tap the mic to stop, or Send."
+    }
+
+    private func startDictation(autoSend: Bool) {
+        composerFocused = false
+        errorText = nil
+        draftBeforeDictation = draft
+        dictation.start(autoSend: autoSend, owner: dictationOwner, onSend: { text in
+            draft = LiveTranscript.join(draftBeforeDictation, text)
+            Task { await send() }
+        }, onKeepDraft: { text in
+            draft = LiveTranscript.join(draftBeforeDictation, text)
+        }, onFailure: { why in
+            errorText = why
+        })
+    }
+
+    private func micTapped() {
+        if isMyDictation {
+            dictation.stop()
+        } else {
+            startDictation(autoSend: false)
+        }
+    }
+
+    /// Send: while dictating, finish and send what was heard (with what was
+    /// typed before it); otherwise send the draft.
+    private func sendTapped() {
+        if isMyDictation && dictation.isListening && !dictation.transcript.isEmpty {
+            dictation.sendNow()
+            return
+        }
+        if isMyDictation { dictation.cancel() }
+        Task { await send() }
     }
 
     private var composer: some View {
         HStack(alignment: .bottom, spacing: 8) {
+            Button(action: micTapped) {
+                Image(systemName: isMyDictation ? "stop.circle.fill" : "mic.circle")
+                    .font(.title)
+                    .foregroundStyle(isMyDictation ? Color.red : Color.accentColor)
+            }
+            .disabled(sending || (dictation.isActive && !isMyDictation))
+            .accessibilityLabel(isMyDictation ? "Stop dictation" : "Dictate")
+            .accessibilityIdentifier("micButton")
             TextField("Message", text: $draft, axis: .vertical)
                 .lineLimit(1...6)
                 .textFieldStyle(.roundedBorder)
                 .focused($composerFocused)
                 .submitLabel(.send)
+                .disabled(isMyDictation)
                 .accessibilityIdentifier("composerField")
-            Button {
-                Task { await send() }
-            } label: {
+            Button(action: sendTapped) {
                 Image(systemName: "arrow.up.circle.fill").font(.title)
             }
             .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || sending)
@@ -90,9 +209,12 @@ struct ConversationView: View {
     // MARK: Sending
 
     private func send() async {
-        guard let client = model.client else { return }
+        guard let client = model.client else {
+            errorText = model.configurationProblem ?? RelayError.notConfigured.localizedDescription
+            return
+        }
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        guard !text.isEmpty, !sending else { return }
         // The same client turn id is reused until the send succeeds, so a retry
         // after a dropped connection cannot make a second turn.
         let ctid = pendingClientTurnID ?? makeClientTurnID()
@@ -100,7 +222,15 @@ struct ConversationView: View {
         sending = true
         defer { sending = false }
         do {
-            let turn = try await client.sendTurn(conversationID: conversationID, text: text, clientTurnID: ctid)
+            // A new conversation is made on its first message (kept if the turn then fails).
+            let id: String
+            if let conversationID {
+                id = conversationID
+            } else {
+                id = try await client.createConversation().id
+                conversationID = id
+            }
+            let turn = try await client.sendTurn(conversationID: id, text: text, clientTurnID: ctid)
             pendingClientTurnID = nil
             draft = ""
             errorText = nil
@@ -124,7 +254,7 @@ struct ConversationView: View {
         model.notifier.observe(turn)
     }
 
-    private func refresh(_ client: RelayClient) async throws {
+    private func refresh(_ client: RelayClient, _ conversationID: String) async throws {
         let conv = try await client.conversation(id: conversationID)
         for t in conv.turns ?? [] { merge(t) }
         lastEventID = max(lastEventID, conv.lastEventId)
@@ -133,11 +263,12 @@ struct ConversationView: View {
     }
 
     private func follow() async {
-        turns = CacheStore.cachedTurns(conversationID: conversationID, in: context)
+        guard let conversationID else { return }
+        if turns.isEmpty { turns = CacheStore.cachedTurns(conversationID: conversationID, in: context) }
         guard let client = model.client else { return }
         while !Task.isCancelled {
             do {
-                try await refresh(client)
+                try await refresh(client, conversationID)
                 for try await event in client.events(conversationID: conversationID, after: lastEventID) {
                     if let id = event.id { lastEventID = id }
                     if let turn = event.turn {
@@ -158,7 +289,7 @@ struct ConversationView: View {
                 }
                 // The stream is down: poll while something is unfinished.
                 try? await Task.sleep(for: .seconds(2))
-                try? await refresh(client)
+                try? await refresh(client, conversationID)
             }
         }
     }

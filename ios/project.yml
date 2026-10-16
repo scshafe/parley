@@ -55,6 +55,9 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
         UIBackgroundModes: [audio]
+        # Dictation (the Action Button's new conversation, the composer's mic).
+        NSMicrophoneUsageDescription: Parley listens while you dictate a message, so you can talk to your agent instead of typing.
+        NSSpeechRecognitionUsageDescription: Parley turns what you say into the text of your message. Speech is recognized on this iPhone where it can be.
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
