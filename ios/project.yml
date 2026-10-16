@@ -1,6 +1,10 @@
 # The Xcode project is generated from this spec by XcodeGen (version pinned in
 # .github/workflows/ci.yml); the .xcodeproj is not committed.
 #   xcodegen generate --spec ios/project.yml
+# It is unsigned (DEVELOPMENT_TEAM is empty): CI builds for the simulator. To
+# run on an iPhone, a git-ignored ios/project.local.yml includes this file and
+# adds your team (ios/project.local.yml.example; README "Install on your
+# iPhone with a free Apple ID").
 name: Parley
 options:
   bundleIdPrefix: com.scshafe
