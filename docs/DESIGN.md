@@ -313,6 +313,19 @@ is the reference. The app's P2 work is recorded separately.
 - OpenClaw's docs list `status` `incomplete` (a reply cut at the token limit). The adapter reads its text like a completed one.
 - It has been run only against a local stand-in so far. The real run waits for runbook Stage 6 (the endpoint enabled) and Stage 7c (the password file).
 
+## P2 build decisions: the app
+
+Details the P2 build settled for the iOS app (2026-10-16). The code is the reference.
+
+- **Sign-in.** OIDC authorization code with PKCE (S256), as Pocket ID's public client `parley-ios`.
+  - The issuer and client id are build settings (`PARLEY_OIDC_ISSUER`, `PARLEY_OIDC_CLIENT_ID`) read from the Info.plist; the endpoints come from the issuer's discovery document.
+  - The redirect is `com.scshafe.parley://oauth/callback`, a URL scheme the app registers. The sign-in page opens in an ephemeral `ASWebAuthenticationSession` (no shared cookies, no "wants to sign in" prompt; a passkey works).
+  - Scopes `openid profile email offline_access` (`offline_access` only if the issuer lists it).
+  - The callback's `state`, its `iss` when present (RFC 9207), and the ID token's issuer, audience and nonce are checked. The ID token's signature is not: it comes straight from the token endpoint over TLS, and its claims only name the account in Settings. The relay's door verifies the access token.
+- **Tokens.** The access token, refresh token and ID token are one Keychain item (this device only, after first unlock). The access token is refreshed a minute before it expires, one refresh at a time. A rotated refresh token replaces the old one. A refresh that Pocket ID refuses (400 or 401) signs the app out; a network error does not.
+- **Networking with the token (B13).** Every relay call carries the current access token. A 401 is retried once with a fresh token. Audio and timings are downloaded with it; the player plays the downloaded file. The event stream opens with the current token (retried once after a 401), and reconnects when the token is refreshed, the sign-in changes, or the app returns to the foreground.
+- **The dev relay.** A dev token (Settings, *Dev relay*), when set, is sent as is instead of the sign-in. UI tests set it through the environment and never touch the Keychain.
+
 ## Decisions (owner, 2026-10-15: the recommendations accepted)
 
 | Id | Question | Decision |

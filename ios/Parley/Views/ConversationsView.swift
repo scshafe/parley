@@ -59,7 +59,7 @@ struct ConversationsView: View {
             }
         }
         .refreshable { await reload() }
-        .task(id: model.relayURLString + model.token) { await reload() }
+        .task(id: model.connectionKey) { await reload() }
         .onChange(of: path.count) { _, count in
             if count == 0 { Task { await reload() } }
         }
@@ -67,7 +67,7 @@ struct ConversationsView: View {
 
     private func reload() async {
         guard let client = model.client else {
-            errorText = "Set the relay URL and token in Settings."
+            errorText = RelayError.notConfigured.localizedDescription
             return
         }
         loading = true

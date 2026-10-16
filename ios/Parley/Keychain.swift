@@ -1,11 +1,12 @@
 import Foundation
 import Security
 
-/// The dev token in the Keychain (this device only, after first unlock).
+/// Generic passwords in the Keychain (this device only, after first unlock):
+/// the dev token and the signed-in session's tokens.
 enum Keychain {
     private static let service = "com.scshafe.parley"
 
-    static func get(_ account: String) -> String? {
+    static func data(_ account: String) -> Data? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -17,20 +18,29 @@ enum Keychain {
         guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess, let data = item as? Data else {
             return nil
         }
-        return String(data: data, encoding: .utf8)
+        return data
     }
 
-    static func set(_ value: String, for account: String) {
+    /// Replace the item, or delete it when `data` is nil or empty.
+    static func set(data: Data?, for account: String) {
         let base: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
         SecItemDelete(base as CFDictionary)
-        guard !value.isEmpty else { return }
+        guard let data, !data.isEmpty else { return }
         var add = base
-        add[kSecValueData as String] = Data(value.utf8)
+        add[kSecValueData as String] = data
         add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         SecItemAdd(add as CFDictionary, nil)
+    }
+
+    static func get(_ account: String) -> String? {
+        data(account).map { String(decoding: $0, as: UTF8.self) }
+    }
+
+    static func set(_ value: String, for account: String) {
+        set(data: Data(value.utf8), for: account)
     }
 }

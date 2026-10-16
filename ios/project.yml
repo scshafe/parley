@@ -21,6 +21,10 @@ settings:
     CODE_SIGN_STYLE: Automatic
     # The app's bundle id; ios/project.local.yml can override it.
     PARLEY_BUNDLE_ID: com.scshafe.parley
+    # Pocket ID sign-in: the issuer (its discovery document) and the public
+    # client. ios/project.local.yml can override them.
+    PARLEY_OIDC_ISSUER: https://id.colobus-stargazer.ts.net
+    PARLEY_OIDC_CLIENT_ID: parley-ios
 packages:
   ParleyKit:
     path: ParleyKit
@@ -43,6 +47,13 @@ targets:
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
+        # Sign-in (B10): Pocket ID redirects to com.scshafe.parley://oauth/callback.
+        CFBundleURLTypes:
+          - CFBundleURLName: com.scshafe.parley.oauth
+            CFBundleURLSchemes: [com.scshafe.parley]
+        ParleyOIDCIssuer: $(PARLEY_OIDC_ISSUER)
+        ParleyOIDCClientID: $(PARLEY_OIDC_CLIENT_ID)
+        ParleyOIDCRedirectURI: com.scshafe.parley://oauth/callback
         NSAppTransportSecurity:
           # The relay is https on the tailnet; plain http only for a dev relay
           # on this machine (the simulator) or the local network.
