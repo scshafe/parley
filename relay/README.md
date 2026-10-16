@@ -93,8 +93,11 @@ its secret files are in `/run/secrets`.
 | `PARLEY_MAX_SENTENCE_CHARS` | the voice release's one-pass sentence limit, if known |
 
 How the app's requests are checked: the module docstring of
-`src/parley_relay/auth.py`. `parley-relay --dev` ignores all of this and keeps
-P1's static bearer (`parley-dev`, or `PARLEY_TOKEN_FILE` / `PARLEY_TOKEN`).
+`src/parley_relay/auth.py`. `parley-relay --dev` ignores all of this and takes
+one static bearer, the public placeholder `parley-dev`, so it listens only on
+loopback (`--host` must be `localhost`, `127.0.0.1` or `::1`). It is for the
+relay's own tests, trying a turn by hand, and the app's UI tests in CI; the app
+itself takes no static token.
 
 ## Tests
 

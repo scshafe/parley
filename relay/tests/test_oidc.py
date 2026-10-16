@@ -188,11 +188,6 @@ def test_real_mode_refuses_to_start_without_its_identity_settings(tmp_path, miss
     assert missing in str(exc.value)
 
 
-def test_the_p1_token_file_is_dev_only(tmp_path):
-    env, _ = real_env(tmp_path, PARLEY_TOKEN_FILE=str(tmp_path / "nope"))
-    assert Settings.from_env(env=env).token is None  # ignored (and never read) outside --dev
-
-
 @pytest.mark.parametrize("endpoint", ["http://id.example.ts.net/api/oidc/token",
                                       "https://elsewhere.example/api/oidc/token"])
 async def test_the_secret_goes_only_to_the_issuers_https_origin(tmp_path, endpoint):

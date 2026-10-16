@@ -118,6 +118,12 @@ public struct OIDCAccount: Codable, Equatable, Sendable {
     public var name: String?
     public var email: String?
 
+    public init(subject: String, name: String? = nil, email: String? = nil) {
+        self.subject = subject
+        self.name = name
+        self.email = email
+    }
+
     public var label: String { name ?? email ?? subject }
 }
 

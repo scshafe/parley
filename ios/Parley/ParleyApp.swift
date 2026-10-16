@@ -32,20 +32,21 @@ struct RootView: View {
     @State private var openTask: Task<Void, Never>?
 
     var body: some View {
-        NavigationStack(path: $path) {
-            ConversationsView(path: $path, showSettings: $showSettings)
-                .navigationDestination(for: ConversationRoute.self) { route in
-                    ConversationView(conversationID: route.id, title: route.title, path: $path)
-                }
-                .navigationDestination(for: ReaderRoute.self) { route in
-                    ReaderPlayerView(turn: route.turn)
-                }
+        Group {
+            if model.showsLogin {
+                LoginView()
+            } else {
+                conversations
+            }
         }
-        .sheet(isPresented: $showSettings) {
-            SettingsView()
-        }
-        .onAppear {
-            if !model.isConfigured { showSettings = true }
+        .onChange(of: model.showsLogin) { _, showsLogin in
+            if showsLogin {
+                // Signed out (by the person or by an ended session): start over.
+                showSettings = false
+                path = NavigationPath()
+            } else {
+                handlePendingRoute()
+            }
         }
         .onChange(of: scenePhase) { _, phase in
             // background -> inactive -> active: count a return from the background.
@@ -66,17 +67,35 @@ struct RootView: View {
             model.notifier.connectionChanged()
             await model.notifier.registerWithRelay()
         }
-        .onChange(of: model.pendingRoute, initial: true) { _, route in
-            guard let route else { return }
-            model.clearPendingRoute()
-            // A newer tap wins: the older one's fetch must not push its reader.
-            openTask?.cancel()
-            openTask = Task { await open(route) }
+        .onChange(of: model.pendingRoute, initial: true) { _, _ in handlePendingRoute() }
+    }
+
+    private var conversations: some View {
+        NavigationStack(path: $path) {
+            ConversationsView(path: $path, showSettings: $showSettings)
+                .navigationDestination(for: ConversationRoute.self) { route in
+                    ConversationView(conversationID: route.id, title: route.title, path: $path)
+                }
+                .navigationDestination(for: ReaderRoute.self) { route in
+                    ReaderPlayerView(turn: route.turn)
+                }
+        }
+        .sheet(isPresented: $showSettings) {
+            SettingsView()
         }
     }
 }
 
 extension RootView {
+    /// A tapped notification waits for the login screen to be done.
+    private func handlePendingRoute() {
+        guard let route = model.pendingRoute, !model.showsLogin else { return }
+        model.clearPendingRoute()
+        // A newer tap wins: the older one's fetch must not push its reader.
+        openTask?.cancel()
+        openTask = Task { await open(route) }
+    }
+
     /// Open a tapped notification: its conversation, then the reader if the
     /// turn is ready.
     private func open(_ route: NotificationRoute) async {

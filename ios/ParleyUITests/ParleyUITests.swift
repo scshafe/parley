@@ -1,21 +1,89 @@
 import XCTest
 
 /// Drives the app in the simulator against a dev relay (`parley-relay --dev`,
-/// started by CI on 127.0.0.1:8765): send a turn, see it reach `ready`, open
-/// the reader-player and see the highlight follow the audio.
+/// started by CI on 127.0.0.1:8765), through the app's UI-test seam (a fake
+/// signed-in session; `Parley/UITestSeam.swift`): the login screen, then send
+/// a turn, see it reach `ready`, open the reader-player and see the highlight
+/// follow the audio.
 final class ParleyUITests: XCTestCase {
+    private var relayURL: String {
+        ProcessInfo.processInfo.environment["PARLEY_UI_TEST_RELAY_URL"] ?? "http://127.0.0.1:8765"
+    }
+
     override func setUpWithError() throws {
         continueAfterFailure = false
     }
 
-    private func launch() -> XCUIApplication {
+    private func launch(signedIn: Bool = true) -> XCUIApplication {
         let app = XCUIApplication()
         let env = ProcessInfo.processInfo.environment
         app.launchEnvironment["PARLEY_UI_TESTING"] = "1"
-        app.launchEnvironment["PARLEY_RELAY_URL"] = env["PARLEY_RELAY_URL"] ?? "http://127.0.0.1:8765"
-        app.launchEnvironment["PARLEY_DEV_TOKEN"] = env["PARLEY_DEV_TOKEN"] ?? "parley-dev"
+        app.launchEnvironment["PARLEY_UI_TEST_RELAY_URL"] = relayURL
+        app.launchEnvironment["PARLEY_UI_TEST_ACCESS_TOKEN"] = env["PARLEY_UI_TEST_ACCESS_TOKEN"] ?? "parley-dev"
+        app.launchEnvironment["PARLEY_UI_TEST_SIGNED_IN"] = signedIn ? "1" : "0"
         app.launch()
         return app
+    }
+
+    /// Replace a text field's contents: tap at its right end (the caret goes
+    /// after the text), delete it all, type the new text.
+    private func replaceText(of field: XCUIElement, with text: String) {
+        field.coordinate(withNormalizedOffset: CGVector(dx: 0.88, dy: 0.5)).tap()
+        let current = field.value as? String ?? ""
+        if !current.isEmpty {
+            field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count + 4))
+        }
+        field.typeText(text)
+    }
+
+    func testTheLoginScreenChecksTheRelayThenOpensTheConversations() throws {
+        let app = launch(signedIn: false)
+        XCTAssertTrue(app.staticTexts["loginTitle"].waitForExistence(timeout: 20))
+        let field = app.textFields["loginRelayURL"]
+        XCTAssertTrue(field.exists)
+        XCTAssertEqual(field.value as? String, relayURL, "the relay field is not prefilled")
+        let button = app.buttons["loginButton"]
+        XCTAssertEqual(button.label, "Sign in")
+        screenshot(app, "login")
+
+        // A relay outside the build's host suffix is refused before any sign-in.
+        replaceText(of: field, with: "https://relay.example.com")
+        button.tap()
+        let error = app.descendants(matching: .any)["loginError"].firstMatch
+        XCTAssertTrue(error.waitForExistence(timeout: 5))
+        XCTAssertTrue(error.label.contains("only to a relay under"), error.label)
+        XCTAssertFalse(app.staticTexts["loginAccount"].exists, "it signed in for a refused relay")
+
+        // Plain http to another host is refused too.
+        replaceText(of: field, with: "http://parley.example.org")
+        button.tap()
+        XCTAssertTrue(error.waitForExistence(timeout: 5))
+        XCTAssertTrue(error.label.contains("https://"), error.label)
+
+        // A relay that does not answer: signed in, but the screen stays and says so.
+        replaceText(of: field, with: "http://127.0.0.1:9")
+        button.tap()
+        let signedIn = app.staticTexts["loginAccount"].waitForExistence(timeout: 30)
+        screenshot(app, "login-relay-check")
+        XCTAssertTrue(signedIn, "not signed in after the relay check")
+        XCTAssertTrue(error.waitForExistence(timeout: 30))
+        XCTAssertTrue(error.label.contains("did not answer"), error.label)
+        XCTAssertEqual(button.label, "Try again")
+        screenshot(app, "login-relay-unreachable")
+
+        // The right relay: on to the conversations.
+        replaceText(of: field, with: relayURL)
+        button.tap()
+        XCTAssertTrue(app.buttons["newConversation"].waitForExistence(timeout: 30))
+
+        // Settings shows the account; signing out returns to the login screen.
+        app.buttons["settingsButton"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["accountLabel"].firstMatch.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.descendants(matching: .any)["tokenField"].firstMatch.exists)
+        screenshot(app, "settings")
+        app.buttons["signOutButton"].tap()
+        XCTAssertTrue(app.buttons["loginButton"].waitForExistence(timeout: 10))
+        XCTAssertEqual(app.buttons["loginButton"].label, "Sign in")
     }
 
     private func screenshot(_ app: XCUIApplication, _ name: String) {

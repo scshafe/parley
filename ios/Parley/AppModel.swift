@@ -8,32 +8,27 @@ import UIKit
 typealias ParleyKitTurn = ParleyKit.Turn
 
 /// The app's settings, its sign-in and its relay client. The relay URL lives
-/// in UserDefaults; the dev token and the signed-in session's tokens in the
-/// Keychain.
+/// in UserDefaults, the signed-in session's tokens in the Keychain.
 ///
-/// Two ways to authenticate to the relay:
-/// - **Sign in** with Pocket ID (a real relay behind the door): the session's
-///   access token, refreshed before it expires. It is sent only over https to
-///   a host under `PARLEY_RELAY_HOST_SUFFIX` (the tailnet).
-/// - **A dev token** (a dev relay, `parley-relay --dev`): sent as it is. When
-///   one is set it is used instead of the sign-in.
+/// The app reaches its relay only signed in with Pocket ID: the session's
+/// access token, refreshed before it expires, sent only over https to a host
+/// under `PARLEY_RELAY_HOST_SUFFIX` (the tailnet). Until then it shows the
+/// login screen.
 @Observable
 @MainActor
 final class AppModel {
-    static let isUITesting = ProcessInfo.processInfo.environment["PARLEY_UI_TESTING"] == "1"
+    /// The UI tests' seam (`UITestSeam`): only a debug build in the simulator
+    /// honours it; anywhere else it is always off.
+    static let isUITesting = UITestSeam.isActive
     /// The one model, shared with the app delegate (push and notification taps).
     static let shared = AppModel()
 
-    enum AuthMode: Equatable {
-        case devToken
-        case signedIn
-        case none
-    }
-
     private(set) var relayURLString: String
-    private(set) var devToken: String
     private(set) var account: OIDCAccount?
     private(set) var isSignedIn: Bool
+    /// True from a sign-in on the login screen until the relay has answered:
+    /// the login screen stays up meanwhile, and says so if the relay fails.
+    private(set) var awaitingRelayCheck = false
     /// Bumped when the sign-in changes, so an open event stream reconnects.
     /// Not on a refresh: a stream picks the new token up when it reconnects,
     /// and reconnecting on every refresh loops against a relay that refuses.
@@ -46,25 +41,31 @@ final class AppModel {
     let oidcConfiguration: OIDCConfiguration?
     /// Relay hosts that may receive the session token (`PARLEY_RELAY_HOST_SUFFIX`).
     let relayHostSuffix: String
+    /// The relay the login screen starts with (`PARLEY_DEFAULT_RELAY_URL`).
+    let defaultRelayURL: String
     @ObservationIgnored let session: TokenSession?
     let notifier = Notifier()
     /// A notification the person tapped, for the root view to open.
     private(set) var pendingRoute: NotificationRoute?
 
+    /// Whether the root view shows the login screen instead of the conversations.
+    var showsLogin: Bool { !isSignedIn || awaitingRelayCheck }
+
     init() {
-        let env = ProcessInfo.processInfo.environment
         oidcConfiguration = AppModel.oidcConfigurationFromInfoPlist()
         relayHostSuffix = Bundle.main.object(forInfoDictionaryKey: "ParleyRelayHostSuffix") as? String ?? ""
+        defaultRelayURL = (Bundle.main.object(forInfoDictionaryKey: "ParleyDefaultRelayURL") as? String ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         let store: TokenStoring
-        if AppModel.isUITesting {
-            // UI tests point the app at a dev relay (`parley-relay --dev`).
-            relayURLString = env["PARLEY_RELAY_URL"] ?? "http://127.0.0.1:8765"
-            devToken = env["PARLEY_DEV_TOKEN"] ?? "parley-dev"
-            store = MemoryTokenStore()
+        if let seam = UITestSeam.current {
+            // UI tests: a fake session against a local fake relay; nothing is saved.
+            relayURLString = seam.relayURL
+            store = MemoryTokenStore(seam.startsSignedIn ? seam.tokens : nil)
         } else {
             AppModel.forgetAPreviousInstall()
-            relayURLString = UserDefaults.standard.string(forKey: "relayURL") ?? ""
-            devToken = Keychain.get("relayToken") ?? ""
+            AppModel.forgetTheOldDevToken()
+            let saved = UserDefaults.standard.string(forKey: "relayURL") ?? ""
+            relayURLString = saved.isEmpty ? defaultRelayURL : saved
             store = KeychainTokenStore()
         }
         let saved = store.load()
@@ -83,67 +84,59 @@ final class AppModel {
         }
     }
 
-    // MARK: Settings
+    // MARK: The relay
 
-    /// Save new settings: the URL to UserDefaults, the dev token to the Keychain.
-    func update(relayURL: String, devToken: String) {
-        if relayURL != relayURLString {
-            // Push stops at the old relay, with its own credentials.
-            let oldRelay = relayURLString
-            let oldClient = client
-            Task { await notifier.unregister(from: oldRelay, using: oldClient) }
-        }
-        relayURLString = relayURL
-        self.devToken = devToken
+    /// Check a typed relay URL: https, under the build's host suffix (the UI
+    /// tests' local relay aside).
+    func validate(relayURL raw: String) -> Result<URL, RelayURLProblem> {
+        RelayConfiguration.validate(raw, hostSuffix: relayHostSuffix, allowLoopbackHTTP: UITestSeam.isActive)
+    }
+
+    /// Save a relay URL that `validate` accepted.
+    func update(relayURL url: URL) {
+        let new = url.absoluteString
+        guard new != relayURLString else { return }
+        // Push stops at the old relay, with its own credentials.
+        let oldRelay = relayURLString
+        let oldClient = client
+        Task { await notifier.unregister(from: oldRelay, using: oldClient) }
+        relayURLString = new
         if !AppModel.isUITesting {
-            UserDefaults.standard.set(relayURL, forKey: "relayURL")
-            Keychain.set(devToken, for: "relayToken")
+            UserDefaults.standard.set(new, forKey: "relayURL")
         }
     }
 
-    var relayURL: URL? { RelayConfiguration.parseURL(relayURLString) }
-
-    var authMode: AuthMode {
-        if !devToken.isEmpty { return .devToken }
-        return isSignedIn ? .signedIn : .none
-    }
+    var relayURL: URL? { try? validate(relayURL: relayURLString).get() }
 
     var isConfigured: Bool { client != nil }
 
     /// Why there is no relay client, for the person.
     var configurationProblem: String? {
-        guard let url = relayURL else { return "Set the relay URL in Settings." }
-        return problem(baseURL: url, devToken: devToken)
-    }
-
-    func problem(baseURL: URL, devToken: String) -> String? {
-        if !devToken.isEmpty { return nil }
-        guard isSignedIn, session != nil else { return "Sign in, or set a dev token for a dev relay, in Settings." }
-        guard RelayConfiguration.allowsSessionToken(to: baseURL, hostSuffix: relayHostSuffix) else {
-            return "Your sign-in is sent only over https to a relay under \(relayHostSuffix.isEmpty ? "(no host set in this build)" : relayHostSuffix). For another relay, set its dev token."
-        }
+        if case .failure(let problem) = validate(relayURL: relayURLString) { return problem.localizedDescription }
+        guard isSignedIn, session != nil else { return RelayError.signInRequired.localizedDescription }
         return nil
     }
 
     var client: RelayClient? {
         guard let url = relayURL else { return nil }
-        return client(baseURL: url, devToken: devToken)
+        return client(baseURL: url)
     }
 
-    /// A client for these settings (also unsaved ones, for "Check connection").
-    /// The session's token goes only to an allowed https relay.
-    func client(baseURL: URL, devToken: String) -> RelayClient? {
-        if !devToken.isEmpty { return RelayClient(baseURL: baseURL, auth: StaticBearer(token: devToken)) }
-        guard isSignedIn, let session,
-              RelayConfiguration.allowsSessionToken(to: baseURL, hostSuffix: relayHostSuffix) else { return nil }
+    /// A client for `baseURL` (also an unsaved one, for "Check connection"),
+    /// with the session's token. `nil` unless signed in and the URL passes
+    /// `validate`: the token goes only to an allowed https relay.
+    func client(baseURL: URL) -> RelayClient? {
+        guard isSignedIn, let session, (try? validate(relayURL: baseURL.absoluteString).get()) != nil else {
+            return nil
+        }
         return RelayClient(baseURL: baseURL, auth: session)
     }
 
-    /// Changes when the relay or the way to authenticate to it changes.
-    var connectionKey: String { "\(relayURLString)|\(authMode)|\(devToken.hashValue)" }
+    /// Changes when the relay or the sign-in changes.
+    var connectionKey: String { "\(relayURLString)|\(isSignedIn)|\(authGeneration)" }
 
     /// Changes when an open event stream should reconnect.
-    var streamKey: String { "\(connectionKey)|\(authGeneration)|\(foregroundGeneration)" }
+    var streamKey: String { "\(connectionKey)|\(foregroundGeneration)" }
 
     func cameToForeground() {
         foregroundGeneration += 1
@@ -161,12 +154,52 @@ final class AppModel {
 
     // MARK: Signing in
 
+    /// The login screen's button: check the URL, sign in with Pocket ID
+    /// (unless already signed in), then check that the relay answers. Throws
+    /// `LoginError` for the screen to show; `ASWebAuthenticationSessionError
+    /// .canceledLogin` when the person closes the page.
+    func logIn(relayURL raw: String, using web: WebAuthenticationSession) async throws {
+        let url: URL
+        switch validate(relayURL: raw) {
+        case .success(let u): url = u
+        case .failure(let problem): throw LoginError.relayURL(problem)
+        }
+        awaitingRelayCheck = true
+        update(relayURL: url)
+        if !isSignedIn {
+            do {
+                try await signIn(using: web)
+            } catch {
+                awaitingRelayCheck = false
+                throw error
+            }
+        }
+        guard let client = client(baseURL: url) else {
+            throw LoginError.relayUnreachable(RelayError.notConfigured.localizedDescription)
+        }
+        do {
+            _ = try await client.listConversations()
+        } catch RelayError.signInRequired {
+            awaitingRelayCheck = false
+            throw LoginError.signIn(RelayError.signInRequired.localizedDescription)
+        } catch {
+            throw LoginError.relayUnreachable((error as? LocalizedError)?.errorDescription ?? "\(error)")
+        }
+        awaitingRelayCheck = false
+    }
+
     /// Pocket ID's sign-in page in a web authentication session, then the code
     /// exchange. Throws `ASWebAuthenticationSessionError.canceledLogin` when the
     /// person closes the page.
-    func signIn(using web: WebAuthenticationSession) async throws {
+    private func signIn(using web: WebAuthenticationSession) async throws {
         guard let session, let config = oidcConfiguration else {
             throw OIDCError.discovery("this build has no Pocket ID issuer")
+        }
+        if let seam = UITestSeam.current {
+            // UI tests: no Pocket ID; the fake session signs in at once.
+            await session.signedIn(with: seam.tokens)
+            apply(.signedIn(seam.tokens.account))
+            return
         }
         let oidc = session.oidc
         let discovery = try await oidc.discover()
@@ -180,9 +213,10 @@ final class AppModel {
     }
 
     /// Sign out: first stop push at the relay (that needs the token), then
-    /// forget the tokens.
+    /// forget the tokens. The root view goes back to the login screen.
     func signOut() async {
-        if authMode == .signedIn { await notifier.unregister(from: relayURLString, using: client) }
+        if isSignedIn { await notifier.unregister(from: relayURLString, using: client) }
+        awaitingRelayCheck = false
         await session?.signOut()
         apply(.signedOut)
     }
@@ -212,6 +246,14 @@ final class AppModel {
         UserDefaults.standard.set(true, forKey: key)
     }
 
+    /// Builds before the login screen had a dev token in the Keychain
+    /// (`relayToken`). Delete it once.
+    private static func forgetTheOldDevToken() {
+        let key = "devTokenRemoved"
+        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        if Keychain.set(data: nil, for: "relayToken") { UserDefaults.standard.set(true, forKey: key) }
+    }
+
     private static func oidcConfigurationFromInfoPlist() -> OIDCConfiguration? {
         let info = Bundle.main.infoDictionary ?? [:]
         guard let issuer = (info["ParleyOIDCIssuer"] as? String).flatMap({ URL(string: $0) }), issuer.host != nil,
@@ -220,6 +262,21 @@ final class AppModel {
             return nil
         }
         return OIDCConfiguration(issuer: issuer, clientID: clientID, redirectURI: redirect)
+    }
+}
+
+/// What the login screen says when it cannot go on.
+enum LoginError: Error, LocalizedError {
+    case relayURL(RelayURLProblem)
+    case signIn(String)
+    case relayUnreachable(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .relayURL(let problem): return problem.localizedDescription
+        case .signIn(let why): return why
+        case .relayUnreachable(let why): return "You are signed in, but the relay did not answer. \(why)"
+        }
     }
 }
 

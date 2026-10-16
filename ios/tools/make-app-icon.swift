@@ -5,7 +5,8 @@
 //   swift ios/tools/make-app-icon.swift ios/Parley/Assets.xcassets/AppIcon.appiconset
 //
 // macOS only (CoreGraphics, ImageIO). The PNGs are committed; run this again
-// only to change the icon.
+// only to change the icon. The login screen's Logo.imageset is the light and
+// dark PNGs scaled to 312 px (`sips -Z 312 AppIcon.png --out Logo.png`).
 
 import CoreGraphics
 import Foundation

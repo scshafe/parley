@@ -1,38 +1,49 @@
-import AuthenticationServices
 import ParleyKit
 import SwiftData
 import SwiftUI
 import UserNotifications
 
-/// The relay URL, signing in with Pocket ID (or a dev relay's token), and
-/// notification permission.
+/// The account (who is signed in, Sign out), the relay URL, notification
+/// permission and the version. Signing in happens on the login screen.
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var context
     @Environment(PlayerController.self) private var player
-    @Environment(\.webAuthenticationSession) private var webAuthenticationSession
     @State private var urlText = ""
-    @State private var tokenText = ""
     @State private var checkResult: String?
-    @State private var signInError: String?
-    @State private var signingIn = false
+    @State private var urlProblem: String?
+    @State private var checking = false
 
     var body: some View {
         NavigationStack {
             Form {
+                accountSection
                 Section {
-                    TextField("https://relay.example.ts.net", text: $urlText)
+                    TextField("https://parley.example.ts.net", text: $urlText)
                         .keyboardType(.URL)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                        .onChange(of: urlText) { _, _ in
+                            urlProblem = nil
+                            checkResult = nil
+                        }
                         .accessibilityIdentifier("relayURLField")
-                    Button("Check connection") { Task { await check() } }
-                        .disabled(RelayConfiguration.parseURL(urlText) == nil || !canAuthenticate)
-                        .accessibilityIdentifier("checkConnection")
-                    if let url = RelayConfiguration.parseURL(urlText),
-                       let problem = model.problem(baseURL: url, devToken: trimmedToken), model.isSignedIn {
-                        Text(problem).font(.footnote).foregroundStyle(.orange)
+                    Button {
+                        Task { await check() }
+                    } label: {
+                        HStack {
+                            Text("Check connection")
+                            if checking {
+                                Spacer()
+                                ProgressView()
+                            }
+                        }
+                    }
+                    .disabled(checking || urlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .accessibilityIdentifier("checkConnection")
+                    if let urlProblem {
+                        Text(urlProblem).font(.footnote).foregroundStyle(.red)
                             .accessibilityIdentifier("relayProblem")
                     }
                     if let checkResult {
@@ -42,18 +53,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Relay")
                 } footer: {
-                    Text("The relay's address on your tailnet.")
-                }
-                accountSection
-                Section {
-                    SecureField("Dev token", text: $tokenText)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .accessibilityIdentifier("tokenField")
-                } header: {
-                    Text("Dev relay")
-                } footer: {
-                    Text("Only for a dev relay (parley-relay --dev): its token, used instead of the sign-in. Leave it empty for your real relay. It stays in this phone's Keychain.")
+                    Text(relayFooter)
                 }
                 Section {
                     LabeledContent("Status", value: notificationLabel)
@@ -76,46 +76,28 @@ struct SettingsView: View {
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                        .accessibilityIdentifier("settingsCancel")
+                }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { save(); dismiss() }
+                    Button("Done") { if save() { dismiss() } }
                         .accessibilityIdentifier("settingsDone")
                 }
             }
             .onAppear {
                 urlText = model.relayURLString
-                tokenText = model.devToken
             }
             .task { await model.notifier.refreshAuthorization() }
         }
     }
 
-    @ViewBuilder
     private var accountSection: some View {
         Section {
-            if model.isSignedIn {
-                LabeledContent("Signed in as", value: model.account?.label ?? "you")
-                    .accessibilityIdentifier("accountLabel")
-                Button("Sign out", role: .destructive) { Task { await signOut() } }
-                    .accessibilityIdentifier("signOutButton")
-            } else {
-                Button {
-                    Task { await signIn() }
-                } label: {
-                    HStack {
-                        Text("Sign in")
-                        if signingIn {
-                            Spacer()
-                            ProgressView()
-                        }
-                    }
-                }
-                .disabled(signingIn || model.oidcConfiguration == nil)
-                .accessibilityIdentifier("signInButton")
-            }
-            if let signInError {
-                Text(signInError).font(.footnote).foregroundStyle(.red)
-                    .accessibilityIdentifier("signInError")
-            }
+            LabeledContent("Signed in as", value: model.account?.label ?? "you")
+                .accessibilityIdentifier("accountLabel")
+            Button("Sign out", role: .destructive) { Task { await signOut() } }
+                .accessibilityIdentifier("signOutButton")
         } header: {
             Text("Account")
         } footer: {
@@ -124,21 +106,15 @@ struct SettingsView: View {
     }
 
     private var accountFooter: String {
-        guard let issuer = model.oidcConfiguration?.issuer.host else {
-            return "This build has no sign-in configured."
-        }
-        var text = "Sign in with Pocket ID (\(issuer)) to reach your relay through its door. You stay signed in on this phone; the session is kept in its Keychain."
-        if !tokenText.trimmingCharacters(in: .whitespaces).isEmpty {
-            text += " A dev token is set, so it is used instead."
-        }
-        return text
+        guard let issuer = model.oidcConfiguration?.issuer.host else { return "" }
+        return "Signed in with Pocket ID (\(issuer)). Signing out forgets the session and this phone's copy of your conversations and replies."
     }
 
-    private var trimmedToken: String { tokenText.trimmingCharacters(in: .whitespacesAndNewlines) }
-
-    private var canAuthenticate: Bool {
-        guard let url = RelayConfiguration.parseURL(urlText) else { return false }
-        return model.client(baseURL: url, devToken: trimmedToken) != nil
+    private var relayFooter: String {
+        let suffix = model.relayHostSuffix
+        guard !suffix.isEmpty else { return "The relay's address on your tailnet." }
+        let shown = suffix.hasPrefix(".") ? "*" + suffix : "*." + suffix
+        return "The relay's address on your tailnet. Your sign-in is sent only over https to a relay under \(shown)."
     }
 
     private var notificationLabel: String {
@@ -150,13 +126,23 @@ struct SettingsView: View {
         }
     }
 
-    private func save() {
-        model.update(relayURL: urlText.trimmingCharacters(in: .whitespacesAndNewlines),
-                     devToken: tokenText.trimmingCharacters(in: .whitespacesAndNewlines))
+    /// Save the relay URL if it changed and may carry the sign-in; otherwise
+    /// say why and stay open.
+    private func save() -> Bool {
+        let typed = urlText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if typed == model.relayURLString { return true }
+        switch model.validate(relayURL: typed) {
+        case .success(let url):
+            model.update(relayURL: url)
+            return true
+        case .failure(let problem):
+            urlProblem = problem.localizedDescription
+            return false
+        }
     }
 
     /// Sign out, and forget what this phone kept of the relay: the cached
-    /// conversations and the reply audio.
+    /// conversations and the reply audio. The app goes back to the login screen.
     private func signOut() async {
         player.stop()
         await model.signOut()
@@ -165,25 +151,21 @@ struct SettingsView: View {
         checkResult = nil
     }
 
-    private func signIn() async {
-        signingIn = true
-        signInError = nil
-        defer { signingIn = false }
-        do {
-            try await model.signIn(using: webAuthenticationSession)
-        } catch let error as ASWebAuthenticationSessionError where error.code == .canceledLogin {
-            // Closed by the person: nothing to say.
-        } catch {
-            signInError = error.localizedDescription
-        }
-    }
-
     private func check() async {
-        guard let url = RelayConfiguration.parseURL(urlText),
-              let client = model.client(baseURL: url,
-                                        devToken: tokenText.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+        checkResult = nil
+        let url: URL
+        switch model.validate(relayURL: urlText) {
+        case .success(let u): url = u
+        case .failure(let problem):
+            urlProblem = problem.localizedDescription
             return
         }
+        guard let client = model.client(baseURL: url) else {
+            urlProblem = RelayError.signInRequired.localizedDescription
+            return
+        }
+        checking = true
+        defer { checking = false }
         do {
             let list = try await client.listConversations()
             checkResult = "Connected: \(list.count) conversation\(list.count == 1 ? "" : "s")."

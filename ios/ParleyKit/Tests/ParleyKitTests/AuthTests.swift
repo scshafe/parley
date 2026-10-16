@@ -294,7 +294,7 @@ final class TokenSessionTests: XCTestCase {
 
     func testAStaticTokenIsNotRetried() async {
         StubProtocol.handler = { _ in (401, [:], Data()) }
-        let relay = RelayClient(baseURL: URL(string: "http://relay.test")!, auth: StaticBearer(token: "parley-dev"),
+        let relay = RelayClient(baseURL: URL(string: "http://relay.test")!, auth: StaticBearer(token: "fixed"),
                                 session: session)
         do {
             _ = try await relay.listConversations()
@@ -385,6 +385,29 @@ extension TokenSessionTests {
         XCTAssertFalse(ok("https://example.ts.net"))
         XCTAssertFalse(ok("http://127.0.0.1:8765"))
         XCTAssertFalse(ok("https://parley.example.ts.net", ""))
+    }
+
+    func testTheLoginScreenChecksTheRelayAddress() {
+        func check(_ raw: String, _ suffix: String = ".example.ts.net", loopback: Bool = false)
+            -> Result<String, RelayURLProblem> {
+            RelayConfiguration.validate(raw, hostSuffix: suffix, allowLoopbackHTTP: loopback).map(\.absoluteString)
+        }
+        XCTAssertEqual(check(" https://parley.example.ts.net/ "), .success("https://parley.example.ts.net"))
+        XCTAssertEqual(check("parley.example.ts.net"), .success("https://parley.example.ts.net"))
+        XCTAssertEqual(check("  "), .failure(.empty))
+        XCTAssertEqual(check("ftp://parley.example.ts.net"), .failure(.invalid))
+        XCTAssertEqual(check("http://parley.example.ts.net"), .failure(.notHTTPS))
+        XCTAssertEqual(check("https://parley.example.com"), .failure(.outsideHostSuffix(".example.ts.net")))
+        XCTAssertEqual(check("https://example.ts.net"), .failure(.outsideHostSuffix(".example.ts.net")))
+        XCTAssertEqual(check("https://parley.example.ts.net", ""), .failure(.noHostSuffixInBuild))
+        // Plain http to this machine only where the UI tests ask for it.
+        XCTAssertEqual(check("http://127.0.0.1:8765"), .failure(.notHTTPS))
+        XCTAssertEqual(check("http://127.0.0.1:8765", loopback: true), .success("http://127.0.0.1:8765"))
+        XCTAssertEqual(check("http://localhost:8765", loopback: true), .success("http://localhost:8765"))
+        XCTAssertEqual(check("http://192.168.1.2:8765", loopback: true), .failure(.notHTTPS))
+        XCTAssertEqual(check("https://evil.com", loopback: true), .failure(.outsideHostSuffix(".example.ts.net")))
+        XCTAssertTrue(RelayURLProblem.outsideHostSuffix(".example.ts.net").localizedDescription
+            .contains("*.example.ts.net"))
     }
 
     func testRedirectsAreFollowedOnlyWithinTheOrigin() {

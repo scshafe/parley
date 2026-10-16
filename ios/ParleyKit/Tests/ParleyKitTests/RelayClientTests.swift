@@ -52,8 +52,7 @@ final class RelayClientTests: XCTestCase {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [StubProtocol.self]
         StubProtocol.seen = []
-        client = RelayClient(configuration: RelayConfiguration(baseURL: URL(string: "http://relay.test")!,
-                                                               token: "test-token"),
+        client = RelayClient(baseURL: URL(string: "http://relay.test")!, auth: StaticBearer(token: "test-token"),
                              session: URLSession(configuration: config))
     }
 

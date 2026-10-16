@@ -17,7 +17,7 @@ def test_listen_socket_binds_one_literal_address():
 
 import pytest  # noqa: E402
 
-from parley_relay.cli import main, parse_hosts, url_for  # noqa: E402
+from parley_relay.cli import main, parse_hosts, require_loopback, url_for  # noqa: E402
 
 
 def test_hosts_one_name_or_several_literals():
@@ -34,3 +34,15 @@ def test_a_bad_host_list_is_a_clean_usage_error(capsys):
         main(["--dev", "--host", "localhost,127.0.0.1"])
     assert exc.value.code == 2
     assert "each must be an IP address" in capsys.readouterr().err
+
+
+def test_dev_mode_listens_only_on_loopback(capsys):
+    require_loopback(["localhost"])
+    require_loopback(["127.0.0.1", "::1"])
+    for bad in (["0.0.0.0"], ["127.0.0.1", "192.168.1.5"], ["parley.example.ts.net"]):
+        with pytest.raises(ValueError):
+            require_loopback(bad)
+    with pytest.raises(SystemExit) as exc:
+        main(["--dev", "--host", "0.0.0.0"])
+    assert exc.value.code == 2
+    assert "listens only on loopback" in capsys.readouterr().err
