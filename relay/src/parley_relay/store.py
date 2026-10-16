@@ -4,7 +4,10 @@ each turn's audio and timings as files beside it."""
 from __future__ import annotations
 
 import json
+import logging
+import os
 import secrets
+import shutil
 import sqlite3
 import threading
 from collections.abc import Iterator
@@ -61,6 +64,11 @@ CREATE INDEX IF NOT EXISTS events_by_conversation ON events (conversation_id, id
 CREATE INDEX IF NOT EXISTS turns_by_state ON turns (state);
 """
 
+log = logging.getLogger("parley.store")
+
+DB_NAME = "relay.sqlite3"
+SNAPSHOT_DIR = "backup"  # data_dir/backup/relay.sqlite3: the copy a backup restores from
+
 ACTIVE_STATES = ("thinking", "speaking")
 TERMINAL_STATES = ("ready", "failed")
 
@@ -82,7 +90,14 @@ class Store:
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         (self.data_dir / "turns").mkdir(exist_ok=True)
-        self._db = sqlite3.connect(self.data_dir / "relay.sqlite3", check_same_thread=False, isolation_level=None)
+        db_path = self.data_dir / DB_NAME
+        snapshot = self.snapshot_path
+        if not db_path.exists() and snapshot.exists():
+            # A restore: the backup's live database files were removed, so the
+            # relay starts from its last consistent snapshot.
+            shutil.copyfile(snapshot, db_path)
+            log.warning("the database was missing: restored it from %s/%s", SNAPSHOT_DIR, DB_NAME)
+        self._db = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA foreign_keys=ON")
@@ -92,6 +107,40 @@ class Store:
 
     def close(self) -> None:
         self._db.close()
+
+    # --- snapshots ------------------------------------------------------------------------
+    # The live database is in WAL mode, so a byte copy of it (the stack's
+    # backup tars state/data) can be torn. The relay keeps a consistent copy
+    # beside it, made with SQLite's online backup API; a restore uses that copy
+    # (docs/DESIGN.md, "P2 build decisions: the relay").
+
+    @property
+    def snapshot_path(self) -> Path:
+        return self.data_dir / SNAPSHOT_DIR / DB_NAME
+
+    def changes(self) -> int:
+        """A counter that moves whenever this connection writes."""
+        with self._lock:
+            return self._db.total_changes
+
+    def snapshot(self) -> Path:
+        """Write a consistent copy of the database to ``backup/relay.sqlite3``,
+        atomically (a reader sees the old copy or the new one, never half)."""
+        folder = self.snapshot_path.parent
+        folder.mkdir(exist_ok=True)
+        tmp = folder / f".{DB_NAME}.tmp"
+        tmp.unlink(missing_ok=True)
+        dest = sqlite3.connect(tmp)
+        try:
+            with self._lock:
+                self._db.backup(dest)
+            dest.execute("PRAGMA journal_mode=DELETE")  # one self-contained file
+        finally:
+            dest.close()
+        with open(tmp, "rb") as fh:
+            os.fsync(fh.fileno())
+        os.replace(tmp, self.snapshot_path)
+        return self.snapshot_path
 
     @contextmanager
     def _tx(self) -> Iterator[sqlite3.Connection]:

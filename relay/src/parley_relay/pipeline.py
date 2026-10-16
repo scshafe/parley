@@ -50,6 +50,7 @@ class PipelineSettings:
     max_sentence_chars: int | None = None
     audio_retention_days: int = 30
     sweep_interval: float = 3600.0
+    snapshot_interval: float = 300.0  # a consistent database copy for the stack's backup, when it changed
 
 
 class EventBus:
@@ -82,6 +83,8 @@ class Pipeline:
         self._wake: dict[str, asyncio.Event] = {}
         self._conversation_locks: dict[str, asyncio.Lock] = {}
         self._sweeper: asyncio.Task | None = None
+        self._snapshotter: asyncio.Task | None = None
+        self._snapshot_changes: int | None = None
 
     # --- lifecycle ------------------------------------------------------------------------------
 
@@ -90,11 +93,14 @@ class Pipeline:
             log.info("resuming turn %s in state %s", t["id"], t["state"])
             self.submit(t["id"])
         self._sweeper = asyncio.get_running_loop().create_task(self._sweep_loop())
+        self._snapshotter = asyncio.get_running_loop().create_task(self._snapshot_loop())
 
     async def stop(self) -> None:
         tasks = list(self._tasks.values())
         if self._sweeper:
             tasks.append(self._sweeper)
+        if self._snapshotter:
+            tasks.append(self._snapshotter)
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -311,6 +317,30 @@ class Pipeline:
             self.store.update_turn(t["id"], audio_deleted=1)
             n += 1
         return n
+
+    def snapshot_if_changed(self) -> bool:
+        """Refresh the database snapshot if anything was written since the last
+        one (or none was taken yet)."""
+        changes = self.store.changes()
+        if changes == self._snapshot_changes and self.store.snapshot_path.exists():
+            return False
+        self.store.snapshot()
+        self._snapshot_changes = changes
+        return True
+
+    async def _snapshot_loop(self) -> None:
+        try:
+            while True:
+                try:
+                    await asyncio.to_thread(self.snapshot_if_changed)
+                except Exception:  # noqa: BLE001
+                    log.exception("database snapshot failed")
+                await asyncio.sleep(self.settings.snapshot_interval)
+        except asyncio.CancelledError:
+            # Shutting down (a deploy, a restart): one last copy.
+            with contextlib.suppress(Exception):
+                self.snapshot_if_changed()
+            raise
 
     async def _sweep_loop(self) -> None:
         while True:

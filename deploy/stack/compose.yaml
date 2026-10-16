@@ -1,0 +1,266 @@
+# parley's relay on the tailnet as its own machine, `parley`, served at
+# https://parley.<tailnet>/ (tailnet only; never Funnel): the API the Parley
+# iPhone app talks to, and the webhook voice-lab's speech API calls back.
+# An app-owned stack on the PC (scshafe infra docs/platform/agent-deploy.md):
+# a merge to main deploys it through the runner lane; nobody runs
+# `docker compose` on it by hand. The design: docs/DESIGN.md.
+#
+# The host's tools/stack validates this file against an allowlist before
+# anything runs: no privileges, no host namespaces, binds only under ./state,
+# images either built here (through the pin) or pinned by digest. `dev check`
+# runs the same validator (DEPLOY-04).
+#
+# Auth: oauth2-proxy -> Pocket ID (https://id.<tailnet>). The app signs in with
+# the PUBLIC Pocket ID client `parley-ios` (PKCE) and sends its access token as
+# `Authorization: Bearer`; the proxy verifies it (skip-jwt-bearer-tokens + an
+# extra JWT issuer whose audience is parley-ios) and passes it through, and the
+# relay verifies it AGAIN itself (issuer, audience, lifetime, the provider's
+# keys) and checks that both the token's subject and the proxy's
+# X-Forwarded-User are the owner (PARLEY_OWNER_SUBJECT). Browsers sign in with
+# the confidential `parley` client (the door's own); the relay's API still
+# wants the app's bearer. /api/ answers 401, never a login redirect.
+# Token-free routes: GET /healthz (the deploy witness, {"ok":true} only) and
+# POST /hooks/voice-lab (voice-lab's webhook; the relay checks its Standard
+# Webhooks signature).
+#
+# Topology (exact addresses are authority; the door layout, V-11):
+#   door      internal /29   ts-parley .2 -> oauth2-proxy .3:4180 (serve.json)
+#   upstream  internal /29   oauth2-proxy .10 -> parley .11:8080
+#   egress    bridge         ts-parley (control, DERP, ACME),
+#                            oauth2-proxy (Pocket ID),
+#                            parley (Pocket ID, voice-lab, the OpenClaw
+#                            gateway, through the host's tailscaled; APNs)
+# Subnets 10.253.92.0/29 and 10.253.92.8/29: unique on the PC (voice-lab has
+# 91; the fleet's other stacks 79-90).
+# The relay listens on its upstream address and loopback (its own
+# healthcheck) only, never on egress, and refuses an /api/ request from any
+# peer but the door's upstream address (PARLEY_TRUSTED_PROXY).
+#
+# State (./state, the runtime directory /srv/stacks/parley):
+#   state/tailscale  the node identity (the sidecar only)
+#   state/data       rw  the relay's SQLite database, reply audio and timings
+#   state/secrets    ro  at /run/secrets: one file per secret, each 0600 and
+#                        owned by the relay's uid 10001, in a 0700 directory
+#                        the owner makes before the first deploy (every
+#                        service binds it read-only, so the deploy supplies,
+#                        never makes, it):
+#                          openclaw-gateway-token   the gateway's password
+#                          voicelab-client-secret   Pocket ID parley-relay
+#                          voicelab-webhook-secret  whsec_..., voice-lab's too
+#                          apns-key.p8              optional: no file, no push
+#                        The relay reads each file when it needs it, so a
+#                        placed or rotated file needs no restart.
+name: parley
+
+networks:
+  door:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.253.92.0/29
+  upstream:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.253.92.8/29
+  egress:
+    driver: bridge
+
+services:
+  # --- the door ------------------------------------------------------------------
+  ts-parley:
+    # tailscale/tailscale:v1.102.2, multi-arch index digest (the fleet's pin)
+    image: tailscale/tailscale:v1.102.2@sha256:321ce041508c19079b57a28b6666c8d81ab0b08accc0a2585b3ab663d557ac24
+    container_name: ts-parley
+    # docker-init as PID 1: containerboot waits only on tailscaled.
+    init: true
+    restart: unless-stopped
+    environment:
+      TS_HOSTNAME: parley
+      TS_USERSPACE: "true"
+      TS_AUTH_ONCE: "true"
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_SERVE_CONFIG: /config/serve.json
+      # Consumed on the first join only; state/tailscale is the identity. The
+      # one-off key is minted with tag:parley (infra's V-06 refuses
+      # TS_EXTRA_ARGS, so the tag comes from the key).
+      TS_AUTHKEY: ${TS_AUTHKEY:-}
+    # Public resolvers, NOT 100.100.100.100 (quad-100 SERVFAILs public names
+    # here and ACME renewal would die silently).
+    dns: [1.1.1.1, 1.0.0.1]
+    volumes:
+      - ./state/tailscale:/var/lib/tailscale
+      - ./serve.json:/config/serve.json:ro
+    networks:
+      door:
+        ipv4_address: 10.253.92.2
+      egress: {}
+    # Userspace tailscale needs no NET_ADMIN or NET_RAW. Every default
+    # capability is dropped except DAC_OVERRIDE: root here must still open
+    # ./state/tailscale, which the host's stack tool keeps cole-owned at 0700
+    # (cap_add is refused, V-03, so the set is spelled out).
+    cap_drop:
+      - AUDIT_WRITE
+      - CHOWN
+      - FOWNER
+      - FSETID
+      - KILL
+      - MKNOD
+      - NET_BIND_SERVICE
+      - NET_RAW
+      - SETFCAP
+      - SETGID
+      - SETPCAP
+      - SETUID
+      - SYS_CHROOT
+    security_opt: [no-new-privileges:true]
+
+  oauth2-proxy:
+    # quay.io/oauth2-proxy/oauth2-proxy:v7.15.3, multi-arch index digest (the fleet's pin)
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.3@sha256:10a1165743a192e1940b4708fb9647027185ce11a681a1c5519b442ff7f1f561
+    container_name: parley-oauth2-proxy
+    init: true
+    restart: unless-stopped
+    user: "65532:65532"  # the image's own nonroot user, spelled out
+    depends_on: [ts-parley, parley]
+    read_only: true
+    # X-Forwarded-* count only from the sidecar, its one peer on the door network
+    # (a flag: --trusted-proxy-ip has no env mapping).
+    command: ["--trusted-proxy-ip=10.253.92.2/32"]
+    environment:
+      OAUTH2_PROXY_PROVIDER: oidc
+      OAUTH2_PROXY_PROVIDER_DISPLAY_NAME: "Pocket ID"
+      OAUTH2_PROXY_OIDC_ISSUER_URL: https://id.colobus-stargazer.ts.net
+      # The door's own Pocket ID client `parley` (confidential, PKCE).
+      OAUTH2_PROXY_CLIENT_ID: ${OIDC_CLIENT_ID}
+      OAUTH2_PROXY_CLIENT_SECRET: ${OIDC_CLIENT_SECRET}
+      OAUTH2_PROXY_REDIRECT_URL: https://parley.colobus-stargazer.ts.net/oauth2/callback
+      OAUTH2_PROXY_CODE_CHALLENGE_METHOD: S256
+      OAUTH2_PROXY_EMAIL_DOMAINS: "*"   # who may sign in = the clients' allowed groups in Pocket ID
+      OAUTH2_PROXY_COOKIE_SECRET: ${OAUTH2_PROXY_COOKIE_SECRET}
+      OAUTH2_PROXY_COOKIE_SECURE: "true"
+      OAUTH2_PROXY_COOKIE_EXPIRE: 12h
+      OAUTH2_PROXY_HTTP_ADDRESS: 10.253.92.3:4180
+      OAUTH2_PROXY_REVERSE_PROXY: "true"
+      OAUTH2_PROXY_UPSTREAMS: http://10.253.92.11:8080
+      OAUTH2_PROXY_SKIP_PROVIDER_BUTTON: "true"
+      # The iPhone app: a Pocket ID access token (RS256 JWT, aud = parley-ios)
+      # as `Authorization: Bearer`, verified against the id node's JWKS.
+      OAUTH2_PROXY_SKIP_JWT_BEARER_TOKENS: "true"
+      OAUTH2_PROXY_EXTRA_JWT_ISSUERS: https://id.colobus-stargazer.ts.net=parley-ios
+      # The app's API answers a missing or bad token with 401, not a login redirect.
+      OAUTH2_PROXY_API_ROUTES: "^/api/"
+      # Deploy witness (GET /healthz, {"ok":true} only) and voice-lab's
+      # webhook (the relay checks its signature) pass without a session.
+      OAUTH2_PROXY_SKIP_AUTH_ROUTES: "GET=^/healthz$$,POST=^/hooks/voice-lab$$"
+      # The relay reads X-Forwarded-User (the OIDC subject).
+      OAUTH2_PROXY_PASS_USER_HEADERS: "true"
+      # The relay verifies the app's bearer itself: pass the caller's own
+      # Authorization header through, never replace it with the session's.
+      OAUTH2_PROXY_PASS_AUTHORIZATION_HEADER: "false"
+      OAUTH2_PROXY_PASS_BASIC_AUTH: "false"
+      # Strip caller-supplied identity headers before setting the proxy-owned
+      # ones (on the skipped routes too).
+      OAUTH2_PROXY_SKIP_AUTH_STRIP_HEADERS: "true"
+      # The event stream (SSE): a turn's state changes reach the app as they
+      # happen. Go's reverse proxy flushes text/event-stream at once; the
+      # interval bounds any other streamed body. The relay closes a stream
+      # after 10 minutes and the app reconnects; audio is small and ranged.
+      OAUTH2_PROXY_FLUSH_INTERVAL: 100ms
+      OAUTH2_PROXY_UPSTREAM_TIMEOUT: 60s
+      # Sign-out's rd= chain to Pocket ID's end-session works only for a
+      # whitelisted host.
+      OAUTH2_PROXY_WHITELIST_DOMAINS: id.colobus-stargazer.ts.net
+    dns: [1.1.1.1, 1.0.0.1]
+    extra_hosts:
+      # OIDC discovery, JWKS and token exchange go to the id node over the
+      # host's tailnet; the name is pinned because the public resolver cannot
+      # answer it.
+      - "id.colobus-stargazer.ts.net:${ID_TAILNET_IP:?set ID_TAILNET_IP (the id node's tailscale IP) in .env}"
+    networks:
+      door:
+        ipv4_address: 10.253.92.3
+      upstream:
+        ipv4_address: 10.253.92.10
+      egress: {}
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+
+  # --- the relay (the pinned image) ------------------------------------------------
+  parley:
+    # Built by the host from this repository's Dockerfile at the merged commit
+    # and pinned in the runtime .env by the deploy.
+    image: ${PARLEY_IMAGE}
+    container_name: parley
+    init: true
+    restart: unless-stopped
+    # The image's own user; the deploy hands state/data (and the owner's
+    # state/secrets) to this uid.
+    user: "10001:10001"
+    command:
+      # The upstream address (the door's only way in) and loopback (the
+      # container's own healthcheck); nothing on egress.
+      - --host
+      - 10.253.92.11,127.0.0.1
+      - --port
+      - "8080"
+    environment:
+      PARLEY_DATA_DIR: /data
+      PARLEY_PUBLIC_URL: https://parley.colobus-stargazer.ts.net
+      # The app's sign-in (Pocket ID): the bearer's issuer, audience and owner.
+      PARLEY_OIDC_ISSUER: https://id.colobus-stargazer.ts.net
+      PARLEY_OIDC_AUDIENCE: parley-ios
+      PARLEY_OWNER_SUBJECT: ${PARLEY_OWNER_SUBJECT:?set PARLEY_OWNER_SUBJECT (the owner's Pocket ID user id) in .env}
+      # Only the door reaches /api/ (its upstream address).
+      PARLEY_TRUSTED_PROXY: 10.253.92.10
+      # The agent: the OpenClaw gateway's /v1/responses (password-mode bearer).
+      PARLEY_AGENT: openclaw
+      PARLEY_OPENCLAW_URL: https://openclaw.colobus-stargazer.ts.net
+      PARLEY_OPENCLAW_TOKEN_FILE: /run/secrets/openclaw-gateway-token
+      PARLEY_OPENCLAW_AGENT_ID: ${PARLEY_OPENCLAW_AGENT_ID:-}
+      # voice-lab's speech API, as the caller `parley` (Pocket ID client
+      # parley-relay, client credentials), and its webhook secret.
+      PARLEY_VOICELAB_URL: https://voice-lab.colobus-stargazer.ts.net
+      PARLEY_VOICELAB_CLIENT_ID: parley-relay
+      PARLEY_VOICELAB_CLIENT_SECRET_FILE: /run/secrets/voicelab-client-secret
+      PARLEY_WEBHOOK_SECRET_FILE: /run/secrets/voicelab-webhook-secret
+      # APNs: push is off until the key file and both ids are in place (an
+      # Apple Developer Program membership); the app then follows its event
+      # stream. A debug build from Xcode registers with the sandbox.
+      PARLEY_APNS_KEY_FILE: /run/secrets/apns-key.p8
+      PARLEY_APNS_KEY_ID: ${PARLEY_APNS_KEY_ID:-}
+      PARLEY_APNS_TEAM_ID: ${PARLEY_APNS_TEAM_ID:-}
+      PARLEY_APNS_TOPIC: com.scshafe.parley
+      PARLEY_APNS_ENV: ${PARLEY_APNS_ENV:-sandbox}
+      # A read-only root: nothing writes outside /data and the /tmp tmpfs.
+      HOME: /tmp
+    dns: [1.1.1.1, 1.0.0.1]
+    extra_hosts:
+      # Tailnet names the public resolver cannot answer: the relay reaches
+      # them through the host's tailscaled (infra tailnet policy).
+      - "id.colobus-stargazer.ts.net:${ID_TAILNET_IP:?set ID_TAILNET_IP (the id node's tailscale IP) in .env}"
+      - "voice-lab.colobus-stargazer.ts.net:${VOICE_LAB_TAILNET_IP:?set VOICE_LAB_TAILNET_IP (the voice-lab node's tailscale IP) in .env}"
+      - "openclaw.colobus-stargazer.ts.net:${OPENCLAW_TAILNET_IP:?set OPENCLAW_TAILNET_IP (the OpenClaw gateway node's tailscale IP) in .env}"
+    volumes:
+      - ./state/data:/data
+      - ./state/secrets:/run/secrets:ro
+    networks:
+      upstream:
+        ipv4_address: 10.253.92.11
+      egress: {}
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 512m
+    stop_grace_period: 10s
+    healthcheck:
+      test: [CMD, /opt/venv/bin/python, -I, -B, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3).close()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

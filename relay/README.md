@@ -13,7 +13,7 @@ uv run parley-relay --dev            # http://127.0.0.1:8765, bearer token: parl
 `--dev` runs the fake agent (canned, speech-style replies) and the fake
 voice-lab (SYNTHETIC tones, never speech) in-process; webhooks go from the fake
 straight into the relay app. Nothing leaves the machine. Data goes to
-`relay/.parley-dev/` (or `--data-dir`). Options: `--port`, `--host`,
+`relay/.parley-dev/` (or `--data-dir`). Options: `--port`, `--host` (several addresses, comma-separated),
 `--fake-agent-delay` (seconds, default 1), `--fake-speech-speed` (render time as
 a fraction of audio length, default 0.3).
 

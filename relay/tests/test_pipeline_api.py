@@ -367,3 +367,29 @@ async def test_event_stream_wakes_on_a_new_turn(relay):
                      headers=AUTH)
         await asyncio.wait_for(task, 5)
     assert len(seen) == 3
+
+
+async def test_the_database_snapshot_is_consistent_and_restores(tmp_path):
+    import sqlite3
+
+    r = build(dev_settings(tmp_path))
+    await r.pipeline.start()
+    async with client_for(r) as c:
+        conv, resp = await new_turn(c)
+        await settle(r)
+    assert r.pipeline.snapshot_if_changed() is True
+    assert r.pipeline.snapshot_if_changed() is False  # nothing written since
+    await r.pipeline.stop()
+    r.store.close()
+    snap = tmp_path / "data" / "backup" / "relay.sqlite3"
+    db = sqlite3.connect(snap)
+    assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    assert db.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+    assert db.execute("SELECT state FROM turns").fetchall() == [("ready",)]
+    db.close()
+    # A restore: the live files are gone, the snapshot is there.
+    for name in ("relay.sqlite3", "relay.sqlite3-wal", "relay.sqlite3-shm"):
+        (tmp_path / "data" / name).unlink(missing_ok=True)
+    store = Store(tmp_path / "data")
+    assert store.get_turn(resp.json()["id"])["state"] == "ready"
+    store.close()

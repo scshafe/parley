@@ -1,0 +1,10 @@
+# Only what the relay image's build copies: never the iOS app, local state,
+# environments or caches.
+*
+!Dockerfile
+!relay/pyproject.toml
+!relay/uv.lock
+!relay/.python-version
+!relay/README.md
+!relay/src/
+relay/src/**/__pycache__
