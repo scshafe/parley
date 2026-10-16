@@ -12,13 +12,16 @@ from urllib.parse import urlsplit
 import httpx
 from starlette.applications import Starlette
 
-from .agent import AgentAdapter, FakeAgent, OpenClawAgent
+from .agent import AgentAdapter, AgentError, FakeAgent, OpenClawAgent
 from .api import build_app
+from .auth import DoorAuth, JwksSource, JwtVerifier
 from .fake_voicelab import FakeVoiceLab
+from .oidc import ClientCredentials
 from .pipeline import Pipeline, PipelineSettings
-from .push import RecordingPushSender
+from .push import NoopPushSender, RecordingPushSender
+from .secretfiles import SecretFile, SecretFileError
 from .store import Store
-from .voicelab import SpeechClient, WebhookSecret, load_secret_file
+from .voicelab import SpeechClient, TokenProvider, WebhookSecret
 
 log = logging.getLogger("parley")
 
@@ -42,19 +45,32 @@ def _read_secret(path: str | None, what: str) -> str:
     return value
 
 
+def _list(value: str | None) -> tuple[str, ...]:
+    return tuple(v.strip() for v in (value or "").split(",") if v.strip())
+
+
 @dataclass
 class Settings:
-    """From the environment (``PARLEY_*``); every secret is a file path."""
+    """From the environment (``PARLEY_*``); every secret is a file path, read
+    when it is needed (relay/README.md, "Configuration")."""
 
     dev: bool = False
     data_dir: Path = Path("state")
-    token: str | None = None  # PARLEY_TOKEN_FILE (or PARLEY_TOKEN), P1's single bearer
+    token: str | None = None  # --dev only: PARLEY_TOKEN_FILE or PARLEY_TOKEN replaces the placeholder
+    # The app's sign-in (real mode): the bearer's issuer and audiences, the owner,
+    # and the door's upstream address.
+    oidc_issuer: str | None = None
+    oidc_audiences: tuple[str, ...] = ("parley-ios",)
+    owner_subject: str | None = None
+    trusted_proxies: tuple[str, ...] = ()
     agent: str = "openclaw"  # PARLEY_AGENT: openclaw | fake
     openclaw_url: str | None = None
     openclaw_token_file: str | None = None
     openclaw_agent_id: str | None = None
     voicelab_url: str | None = None
-    voicelab_token_file: str | None = None
+    voicelab_client_id: str | None = None  # client credentials (P2)
+    voicelab_client_secret_file: str | None = None
+    voicelab_token_file: str | None = None  # a static bearer instead (testing by hand)
     webhook_secret_file: str | None = None
     public_url: str | None = None  # the relay's tailnet URL, for voice-lab's callback
     poll_interval: float = 15.0
@@ -67,23 +83,29 @@ class Settings:
     def from_env(cls, *, dev: bool = False, env: dict[str, str] | None = None) -> Settings:
         e = dict(os.environ if env is None else env)
         token = None
-        if e.get("PARLEY_TOKEN_FILE"):
+        if dev and e.get("PARLEY_TOKEN_FILE"):
             token = _read_secret(e["PARLEY_TOKEN_FILE"], "PARLEY_TOKEN_FILE")
-        elif e.get("PARLEY_TOKEN"):
+        elif dev and e.get("PARLEY_TOKEN"):
             token = e["PARLEY_TOKEN"]
         msc = e.get("PARLEY_MAX_SENTENCE_CHARS")
         return cls(
             dev=dev,
             data_dir=Path(e.get("PARLEY_DATA_DIR") or (".parley-dev" if dev else "state")),
             token=token,
+            oidc_issuer=e.get("PARLEY_OIDC_ISSUER") or None,
+            oidc_audiences=_list(e.get("PARLEY_OIDC_AUDIENCE")) or ("parley-ios",),
+            owner_subject=e.get("PARLEY_OWNER_SUBJECT") or None,
+            trusted_proxies=_list(e.get("PARLEY_TRUSTED_PROXY")),
             agent=e.get("PARLEY_AGENT", "fake" if dev else "openclaw"),
-            openclaw_url=e.get("PARLEY_OPENCLAW_URL"),
-            openclaw_token_file=e.get("PARLEY_OPENCLAW_TOKEN_FILE"),
+            openclaw_url=e.get("PARLEY_OPENCLAW_URL") or None,
+            openclaw_token_file=e.get("PARLEY_OPENCLAW_TOKEN_FILE") or None,
             openclaw_agent_id=e.get("PARLEY_OPENCLAW_AGENT_ID") or None,
-            voicelab_url=e.get("PARLEY_VOICELAB_URL"),
-            voicelab_token_file=e.get("PARLEY_VOICELAB_TOKEN_FILE"),
-            webhook_secret_file=e.get("PARLEY_WEBHOOK_SECRET_FILE"),
-            public_url=e.get("PARLEY_PUBLIC_URL"),
+            voicelab_url=e.get("PARLEY_VOICELAB_URL") or None,
+            voicelab_client_id=e.get("PARLEY_VOICELAB_CLIENT_ID") or None,
+            voicelab_client_secret_file=e.get("PARLEY_VOICELAB_CLIENT_SECRET_FILE") or None,
+            voicelab_token_file=e.get("PARLEY_VOICELAB_TOKEN_FILE") or None,
+            webhook_secret_file=e.get("PARLEY_WEBHOOK_SECRET_FILE") or None,
+            public_url=e.get("PARLEY_PUBLIC_URL") or None,
             poll_interval=float(e.get("PARLEY_POLL_INTERVAL", "1.0" if dev else "15")),
             max_sentence_chars=int(msc) if msc else None,
         )
@@ -140,32 +162,86 @@ def _build_dev(s: Settings) -> Relay:
 def _openclaw(s: Settings) -> OpenClawAgent:
     if not s.openclaw_url:
         raise ConfigError("PARLEY_OPENCLAW_URL is not set")
-    gateway_token = _read_secret(s.openclaw_token_file, "PARLEY_OPENCLAW_TOKEN_FILE")
+    if not s.openclaw_token_file:
+        raise ConfigError("PARLEY_OPENCLAW_TOKEN_FILE is not set")
+    gateway = SecretFile(s.openclaw_token_file, "PARLEY_OPENCLAW_TOKEN_FILE")
 
     async def token() -> str:
-        return gateway_token
+        # Read on use: a placed or rotated gateway password needs no restart.
+        try:
+            value = gateway.get()
+        except SecretFileError as exc:
+            raise AgentError("agent_unconfigured", str(exc)) from exc
+        if value is None:
+            raise AgentError("agent_unconfigured", "PARLEY_OPENCLAW_TOKEN_FILE: the configured file does not exist")
+        return value
 
     return OpenClawAgent(s.openclaw_url, token=token, agent_id=s.openclaw_agent_id)
 
 
+def _file_state(path: str | None) -> str:
+    if not path:
+        return "not configured"
+    return "file present" if os.path.exists(path) else "file missing"
+
+
 def _build_real(s: Settings) -> Relay:
-    if not s.token:
-        raise ConfigError("set PARLEY_TOKEN_FILE: the relay refuses to start without a bearer token")
-    if not s.voicelab_url:
-        raise ConfigError("PARLEY_VOICELAB_URL is not set")
-    store = Store(s.data_dir)
-    secret = load_secret_file(s.webhook_secret_file) if s.webhook_secret_file else None
-    callback = f"{s.public_url.rstrip('/')}/hooks/voice-lab" if s.public_url and secret else None
-    vl_token = _read_secret(s.voicelab_token_file, "PARLEY_VOICELAB_TOKEN_FILE") if s.voicelab_token_file else None
+    missing = [name for name, value in (("PARLEY_OIDC_ISSUER", s.oidc_issuer), ("PARLEY_OWNER_SUBJECT", s.owner_subject),
+                                        ("PARLEY_VOICELAB_URL", s.voicelab_url)) if not value]
+    if missing:
+        raise ConfigError(f"set {', '.join(missing)}: the relay refuses to start without them")
+    closers: list = []
 
-    async def speech_token() -> str | None:
-        # P1: a static bearer from a file. P2: a Pocket ID client-credentials token.
-        return vl_token
+    # The app: a Pocket ID bearer for the owner, through the door.
+    jwks = JwksSource(s.oidc_issuer)  # type: ignore[arg-type]
+    closers.append(jwks.aclose)
+    auth = DoorAuth(JwtVerifier(jwks, issuer=s.oidc_issuer, audiences=s.oidc_audiences,  # type: ignore[arg-type]
+                                subjects=(s.owner_subject,)),  # type: ignore[arg-type]
+                    owner_subject=s.owner_subject, trusted_proxies=s.trusted_proxies)  # type: ignore[arg-type]
 
-    speech = SpeechClient(s.voicelab_url, token=speech_token)
+    # voice-lab: the caller's bearer, and its webhook.
+    speech_token: TokenProvider | None = None
+    if s.voicelab_client_id:
+        if not s.voicelab_client_secret_file:
+            raise ConfigError("PARLEY_VOICELAB_CLIENT_ID needs PARLEY_VOICELAB_CLIENT_SECRET_FILE")
+        provider = ClientCredentials(s.oidc_issuer, s.voicelab_client_id,  # type: ignore[arg-type]
+                                     SecretFile(s.voicelab_client_secret_file, "PARLEY_VOICELAB_CLIENT_SECRET_FILE"))
+        closers.append(provider.aclose)
+        speech_token = provider
+        speech_note = f"voice-lab caller (client credentials, {_file_state(s.voicelab_client_secret_file)})"
+    elif s.voicelab_token_file:
+        static = SecretFile(s.voicelab_token_file, "PARLEY_VOICELAB_TOKEN_FILE")
+
+        async def static_token() -> str | None:
+            return static.require()
+
+        speech_token = static_token
+        speech_note = f"voice-lab (static bearer, {_file_state(s.voicelab_token_file)})"
+    else:
+        speech_note = "voice-lab (no caller credential)"
+    speech = SpeechClient(s.voicelab_url, token=speech_token)  # type: ignore[arg-type]
+    closers.append(speech.aclose)
+    webhook = (SecretFile(s.webhook_secret_file, "PARLEY_WEBHOOK_SECRET_FILE", WebhookSecret.parse)
+               if s.webhook_secret_file else None)
+    callback = f"{s.public_url.rstrip('/')}/hooks/voice-lab" if s.public_url and webhook else None
+
     agent: AgentAdapter = FakeAgent() if s.agent == "fake" else _openclaw(s)
-    push = RecordingPushSender()  # APNs comes in P2
+    if isinstance(agent, OpenClawAgent):
+        closers.append(agent.aclose)
+    push = NoopPushSender()
+    store = Store(s.data_dir)
     pipeline = Pipeline(store, agent, speech, push, PipelineSettings(
         callback_url=callback, poll_interval=s.poll_interval, max_sentence_chars=s.max_sentence_chars))
-    app = build_app(store=store, pipeline=pipeline, token=s.token, webhook_secret=secret, on_shutdown=speech.aclose)
+
+    async def shutdown() -> None:
+        for close in closers:
+            await close()
+
+    app = build_app(store=store, pipeline=pipeline, auth=auth, webhook_secret=webhook.get if webhook else None,
+                    on_shutdown=shutdown)
+    agent_note = ("fake" if s.agent == "fake"
+                  else f"openclaw ({_file_state(s.openclaw_token_file)}{', agent ' + s.openclaw_agent_id if s.openclaw_agent_id else ''})")
+    webhook_note = f"on ({_file_state(s.webhook_secret_file)})" if callback else "off (polling only)"
+    log.info("parley-relay: app auth: %s; agent: %s; speech: %s; webhook: %s; push: off",
+             auth.describe(), agent_note, speech_note, webhook_note)
     return Relay(app, store, pipeline, push, None, agent)

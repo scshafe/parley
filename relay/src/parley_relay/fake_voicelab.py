@@ -46,7 +46,7 @@ def refusal(status: int, code: str, detail: str = "", headers: dict[str, str] | 
     h = {"cache-control": "no-store"}
     if headers:
         h.update(headers)
-    return JSONResponse({"code": code, "detail": detail or code.replace("_", " ")}, status_code=status, headers=h)
+    return JSONResponse({"error": code, "detail": detail or code.replace("_", " ")}, status_code=status, headers=h)
 
 
 def _ok(body: Any, status: int = 200) -> JSONResponse:
@@ -452,7 +452,7 @@ class FakeVoiceLab:
         if job is None:
             return refusal(404, "speech_not_found")
         if job.state in ("succeeded", "failed", "cancelled", "expired"):
-            return JSONResponse({"code": "already_finished", "detail": "The job has ended.", "state": job.state},
+            return JSONResponse({"error": "already_finished", "detail": "The job has ended.", "state": job.state},
                                 status_code=409, headers={"cache-control": "no-store"})
         if job.state == "queued":
             job.state, job.finished_at, job.text = "cancelled", _now(), None

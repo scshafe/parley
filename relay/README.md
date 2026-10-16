@@ -33,8 +33,10 @@ the relay must clean up), `fail` (the agent fails).
 
 ## API
 
-All `/api/v1` routes take `Authorization: Bearer <token>`; errors are
-`{"error": {"code", "detail"}}`.
+All `/api/v1` routes take `Authorization: Bearer <token>` (`--dev`: `parley-dev`; deployed: the app's
+Pocket ID access token, through the door); errors are `{"error": {"code", "detail"}}`, `401` for a
+missing or bad token (`unauthorized`, `invalid_token`, `token_expired`) and `403` for one that may not use
+the relay (`forbidden`, `not_through_door`).
 
 | Route | |
 | --- | --- |
@@ -46,27 +48,46 @@ All `/api/v1` routes take `Authorization: Bearer <token>`; errors are
 | `GET /api/v1/conversations/{id}/events` | SSE, `turn.updated` events with the turn; resume with `Last-Event-ID` or `?after=` |
 | `GET /api/v1/conversations/{id}/turns/{turn}/audio` | `audio/wav` (24 kHz mono), single `Range`; 409 before `ready`, 410 after retention |
 | `GET /api/v1/conversations/{id}/turns/{turn}/timings.json` | follow-along timings, `parley.timings/v1` |
-| `POST /hooks/voice-lab` | voice-lab's webhook, Standard Webhooks signature |
+| `POST /hooks/voice-lab` | voice-lab's webhook, Standard Webhooks signature, no token; `503 webhook_not_configured` until the secret file is placed |
 | `GET /healthz` | no token |
 
 Turn states: `thinking` → `speaking` → `ready`, or `failed` with `error.code`
-(`agent_failed`, `agent_refused`, `agent_unreachable`, `speech_refused`,
+(`agent_failed`, `agent_refused`, `agent_unreachable`, `agent_unconfigured`, `speech_refused`,
 `speech_failed`, `speech_timeout`, `internal_error`).
 
 ## Configuration (not dev mode)
 
-Every secret is a file; nothing secret is in the environment or Git.
+Every secret is a file, read when it is needed: a file placed or rotated on
+the host takes effect without a restart, and a file that is not there yet
+leaves that integration off (the relay still starts and answers `/healthz`).
+Nothing secret is in the environment, the logs or Git. At start-up the relay
+logs one line naming which integrations are on and whether each secret file is
+present, never a value. The stack (`deploy/stack/compose.yaml`) sets these;
+its secret files are in `/run/secrets`.
 
 | Variable | |
 | --- | --- |
-| `PARLEY_TOKEN_FILE` | the app's bearer token (P1; Pocket ID replaces it in P2). Required. |
-| `PARLEY_DATA_DIR` | database, audio and timings (default `state`) |
+| `PARLEY_DATA_DIR` | database, audio and timings (default `state`; the stack: `/data`) |
+| `PARLEY_OIDC_ISSUER` | the app's sign-in, Pocket ID (`https://id.colobus-stargazer.ts.net`). Required |
+| `PARLEY_OIDC_AUDIENCE` | the bearer's audience, comma-separated (default `parley-ios`) |
+| `PARLEY_OWNER_SUBJECT` | the owner's Pocket ID user id: the only subject the relay serves. Required |
+| `PARLEY_TRUSTED_PROXY` | the door's upstream address(es); `/api/` from any other peer is `403` (the stack: `10.253.92.10`) |
 | `PARLEY_AGENT` | `openclaw` (default) or `fake` |
-| `PARLEY_OPENCLAW_URL`, `PARLEY_OPENCLAW_TOKEN_FILE`, `PARLEY_OPENCLAW_AGENT_ID` | the gateway's `/v1/responses` |
-| `PARLEY_VOICELAB_URL`, `PARLEY_VOICELAB_TOKEN_FILE` | the speech API and the caller's bearer (P2: Pocket ID client credentials) |
-| `PARLEY_WEBHOOK_SECRET_FILE`, `PARLEY_PUBLIC_URL` | the `whsec_` secret and the relay's own URL, for the callback |
+| `PARLEY_OPENCLAW_URL` | the gateway (`https://openclaw.colobus-stargazer.ts.net`); `/v1/responses` |
+| `PARLEY_OPENCLAW_TOKEN_FILE` | the gateway's password (password mode, sent as a bearer): `/run/secrets/openclaw-gateway-token` |
+| `PARLEY_OPENCLAW_AGENT_ID` | a dedicated OpenClaw agent (optional) |
+| `PARLEY_VOICELAB_URL` | the speech API (`https://voice-lab.colobus-stargazer.ts.net`). Required |
+| `PARLEY_VOICELAB_CLIENT_ID` | the relay's Pocket ID client, `parley-relay` (client credentials) |
+| `PARLEY_VOICELAB_CLIENT_SECRET_FILE` | its secret: `/run/secrets/voicelab-client-secret` |
+| `PARLEY_VOICELAB_TOKEN_FILE` | instead of the two above, a static bearer (testing by hand) |
+| `PARLEY_WEBHOOK_SECRET_FILE` | voice-lab's `whsec_` webhook secret: `/run/secrets/voicelab-webhook-secret` |
+| `PARLEY_PUBLIC_URL` | the relay's own URL, for the callback (`https://parley.colobus-stargazer.ts.net`); with the webhook secret file set, every speech request carries `callback_url` |
 | `PARLEY_POLL_INTERVAL` | seconds between status polls, the webhook's backstop (default 15) |
 | `PARLEY_MAX_SENTENCE_CHARS` | the voice release's one-pass sentence limit, if known |
+
+How the app's requests are checked: the module docstring of
+`src/parley_relay/auth.py`. `parley-relay --dev` ignores all of this and keeps
+P1's static bearer (`parley-dev`, or `PARLEY_TOKEN_FILE` / `PARLEY_TOKEN`).
 
 ## Tests
 

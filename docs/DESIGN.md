@@ -193,7 +193,7 @@ reference.
   - A short fragment at the very end, with no next sentence, is rendered on its own.
   - The one-pass length limit depends on the voice release's reference clip, which the relay cannot see. It is a setting, `PARLEY_MAX_SENTENCE_CHARS`, unset by default.
   - When the split does not give one sentence per segment, the job's text becomes one timed span and `exact_sentences` is `false`. voice-lab#78's `text_start` and `text_end` replace the rule inside `segment_ranges()`.
-- **Assumed until checked against a real voice-lab (P2).** A refusal body is `{"code", "detail"}` at the top level. The client also reads `{"error": {…}}`.
+- **Assumed until checked against a real voice-lab (P2).** A refusal body is `{"code", "detail"}` at the top level. The client also reads `{"error": {…}}`. (P2: wrong; see [P2 build decisions](#p2-build-decisions-the-relay).)
 - **OpenClaw adapter.**
   - It sends `model: "openclaw/<agent>"`, plus `x-openclaw-agent-id` when an agent id is set.
   - It sends `user: "parley:<conversation>"` for the session, and the style text as `instructions`.
@@ -258,6 +258,32 @@ is the reference. The app's P2 work is recorded separately.
 - **The database in a backup.** The stack's backup is a byte copy (tar) of `state/data`, and the live SQLite database is in WAL mode, so its copy can be torn. The relay therefore keeps a consistent copy, `state/data/backup/relay.sqlite3`, made with SQLite's online backup API into a temporary file and renamed into place. It is refreshed every 5 minutes when anything was written, and once more whenever the relay stops (a deploy's or a restart's stop). Audio and timings are written whole (a temporary file, then a rename).
   - **Restoring:** extract the backup, delete `relay.sqlite3`, `relay.sqlite3-wal` and `relay.sqlite3-shm` from `state/data`, and start the relay. A relay that finds no database but finds the copy starts from the copy, and logs that it did.
   - The pre-deploy backup runs while the old relay is still up, so the copy can be up to 5 minutes behind it. infra's rules leave this stack no other route: it has no host binds and no database container. A turn in flight when the copy was taken resumes from its last recorded state (P1's restart rule).
+
+**The app's sign-in at the relay** (`relay/src/parley_relay/auth.py`).
+
+- In real mode, P1's static bearer (`PARLEY_TOKEN_FILE`) is gone; `--dev` keeps it. A request to `/api/` must pass three checks:
+  - It comes from the door: its peer is `PARLEY_TRUSTED_PROXY`, the door's upstream address.
+  - It carries a Pocket ID access token as its bearer: RS256 or ES256, verified against the issuer's JWKS (found through discovery), from `PARLEY_OIDC_ISSUER`, with an audience in `PARLEY_OIDC_AUDIENCE` (`parley-ios`), and inside its lifetime (60 s leeway).
+  - Its subject, and the door's `X-Forwarded-User`, are the owner (`PARLEY_OWNER_SUBJECT`). oauth2-proxy v7.15.3 sets `X-Forwarded-User` from `sub`.
+- A missing or bad token answers `401`, with `WWW-Authenticate: Bearer`. The codes are `unauthorized`, `invalid_token` and `token_expired`. The app refreshes its token on `token_expired` and signs in again otherwise.
+- A good token for someone else, or a request that went around the door, answers `403` (`forbidden`, `not_through_door`). Keys that cannot be fetched answer `503`.
+- The keys are kept for an hour. An unknown key id refetches them, at most once a minute.
+- `/healthz` and `/hooks/voice-lab` take no token.
+
+**voice-lab as a caller** (`relay/src/parley_relay/oidc.py`, `voicelab.py`).
+
+- The relay's bearer is a client-credentials token for the confidential client `parley-relay`. It is fetched with `client_secret_basic` from the issuer's discovered token endpoint, and reused until 60 s before `expires_in` (or before the JWT's `exp`). A `401` from voice-lab drops the token and retries once with a fresh one.
+- A token that cannot be had fails the speech request as `caller_token_unavailable`. It is retried when the provider was unreachable, and not when the client was refused or the secret file is missing.
+- **The refusal body**, checked against voice-lab's source (`ApiRefusal`, `src/cole_voice_lab/api/contracts.py`), not yet against a live API: `{"error": "<code>", "detail": "..."}`. P1's assumption was wrong. The client reads this shape first and still accepts P1's two guesses. The fake now answers this shape. A job's own `error` stays `{"code", "detail"}` (`SpeechFailure`).
+
+**Configuration** (`relay/README.md`, "Configuration").
+
+- Every secret is a file, re-read when it changes (`secretfiles.py`). A file placed or rotated on the host takes effect without a restart. A file not there yet leaves that integration off:
+  - no gateway password: the turn fails `agent_unconfigured`;
+  - no caller secret: speech is refused;
+  - no webhook secret: the webhook answers `503 webhook_not_configured`, and polling carries the turn.
+- Real mode refuses to start without `PARLEY_OIDC_ISSUER`, `PARLEY_OWNER_SUBJECT` and `PARLEY_VOICELAB_URL`.
+- One start-up line names the auth mode, the agent, the speech caller, the webhook and push, and whether each secret file is present. It never shows a value.
 
 ## Decisions (owner, 2026-10-15: the recommendations accepted)
 

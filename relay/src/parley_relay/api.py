@@ -1,6 +1,7 @@
 """The relay's HTTP API, for the app, and the voice-lab webhook.
 
-App routes (bearer token):
+App routes (``Authorization: Bearer``; who may use them is the
+:mod:`parley_relay.auth` authenticator's choice):
 
 - ``POST /api/v1/conversations`` ``{title?}`` → 201 conversation
 - ``GET  /api/v1/conversations`` → ``{conversations: [...]}``, newest first
@@ -20,7 +21,6 @@ Unauthenticated: ``GET /healthz``.
 from __future__ import annotations
 
 import asyncio
-import hmac
 import json
 import logging
 import re
@@ -32,11 +32,15 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
+from .auth import AuthError, Authenticator, StaticTokenAuth
 from .http_range import ranged
 from .pipeline import Pipeline
 from .store import ConflictError, Store
 from .views import conversation_json, turn_json
+from .secretfiles import SecretFileError
 from .voicelab import WebhookError, WebhookSecret, verify_webhook
+
+WebhookSecretSource = Callable[[], "WebhookSecret | None"]
 
 log = logging.getLogger("parley.api")
 
@@ -57,24 +61,36 @@ def build_app(
     *,
     store: Store,
     pipeline: Pipeline,
-    token: str,
-    webhook_secret: WebhookSecret | None,
+    token: str | None = None,
+    auth: Authenticator | None = None,
+    webhook_secret: WebhookSecret | WebhookSecretSource | None = None,
     stream_heartbeat: float = 15.0,
     stream_max_seconds: float = 600.0,
     on_startup: Callable[[], object] | None = None,
     on_shutdown: Callable[[], object] | None = None,
 ) -> Starlette:
-    if not token:
-        raise ValueError("the relay needs a bearer token")
-    expected = f"Bearer {token}".encode()
+    if auth is None:
+        if not token:
+            raise ValueError("the relay needs an authenticator or a bearer token")
+        auth = StaticTokenAuth(token)
+    authenticator = auth
+    if isinstance(webhook_secret, WebhookSecret):
+        fixed = webhook_secret
 
-    def authorized(request: Request) -> bool:
-        return hmac.compare_digest(request.headers.get("authorization", "").encode(), expected)
+        def secret_source() -> WebhookSecret | None:
+            return fixed
+    else:
+        secret_source = webhook_secret  # type: ignore[assignment]
 
     def guard(handler):  # type: ignore[no-untyped-def]
         async def wrapped(request: Request) -> Response:
-            if not authorized(request):
-                return error(401, "unauthorized")
+            try:
+                request.state.principal = await authenticator.authenticate(request)
+            except AuthError as exc:
+                resp = error(exc.status, exc.code, exc.detail)
+                if exc.status == 401:
+                    resp.headers["www-authenticate"] = 'Bearer realm="parley"'
+                return resp
             return await handler(request)
 
         return wrapped
@@ -182,11 +198,20 @@ def build_app(
         )
 
     async def voice_lab_webhook(request: Request) -> Response:
-        if webhook_secret is None:
+        if secret_source is None:
             return error(404, "not_found")
+        try:
+            secret = secret_source()
+        except SecretFileError as exc:
+            log.warning("webhook refused: %s", exc)
+            secret = None
+        if secret is None:
+            # Not configured yet (no secret file): voice-lab retries, and the
+            # relay's own polling is the backstop.
+            return error(503, "webhook_not_configured")
         body = await request.body()
         try:
-            verify_webhook(webhook_secret, request.headers, body)
+            verify_webhook(secret, request.headers, body)
         except WebhookError:
             return error(401, "bad_signature")
         try:
