@@ -56,7 +56,9 @@ struct ConversationView: View {
         .safeAreaInset(edge: .bottom) { composer }
         .navigationTitle(liveTitle ?? title)
         .navigationBarTitleDisplayMode(.inline)
-        .task { await follow() }
+        // Reconnects when the relay, the sign-in or its access token changes,
+        // and when the app comes back to the foreground.
+        .task(id: model.streamKey) { await follow() }
     }
 
     private var composer: some View {
@@ -144,6 +146,11 @@ struct ConversationView: View {
                 return
             } catch {
                 if Task.isCancelled { return }
+                if let e = error as? RelayError, [.signInRequired, .unauthorized, .notConfigured].contains(e) {
+                    // Retrying cannot help; a new sign-in or token restarts this task.
+                    errorText = e.localizedDescription
+                    return
+                }
                 // The stream is down: poll while something is unfinished.
                 try? await Task.sleep(for: .seconds(2))
                 try? await refresh(client)

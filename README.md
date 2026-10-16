@@ -32,7 +32,7 @@ xcodegen generate --spec ios/project.yml
 open ios/Parley.xcodeproj          # run on an iPhone simulator
 ```
 
-In the app's settings, the relay is `http://127.0.0.1:8765` and the token is `parley-dev`.
+In the app's settings, the relay is `http://127.0.0.1:8765` and the dev token (under *Dev relay*) is `parley-dev`. A dev relay does not take a Pocket ID sign-in.
 
 ## Install on your iPhone with a free Apple ID
 
@@ -63,7 +63,7 @@ In the app's settings, the relay is `http://127.0.0.1:8765` and the token is `pa
 7. **Trust the developer:** the first launch is refused as an "Untrusted Developer". On the iPhone: Settings → General → VPN & Device Management → your Apple ID → **Trust**. Then press Run again.
 8. **Every 7 days,** a free team's profile expires and the app no longer opens. Plug the phone in and press Run again; the app's data is kept.
 
-On the phone, connect Tailscale, then set the relay in Parley's settings.
+On the phone, connect Tailscale. In Parley's settings, set the relay (`https://parley.<tailnet>.ts.net`), leave the dev token empty, and tap **Sign in**: Pocket ID opens in a sheet and you sign in with your passkey. The session (a refresh token) stays in the phone's Keychain, and the app renews its access token by itself. The token goes only over https to a relay under `PARLEY_RELAY_HOST_SUFFIX` (`ios/project.yml`; your local spec can change it).
 
 ## Build and test
 

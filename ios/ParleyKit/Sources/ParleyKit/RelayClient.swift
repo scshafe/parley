@@ -22,19 +22,32 @@ public struct RelayConfiguration: Equatable, Sendable {
         }
         return url
     }
+
+    /// Whether a signed-in session's token may be sent to `url`: only over
+    /// https, and only to a host under `hostSuffix` (for example
+    /// `.example.ts.net`, the tailnet). An empty suffix allows no host.
+    public static func allowsSessionToken(to url: URL, hostSuffix: String) -> Bool {
+        guard url.scheme?.lowercased() == "https", let host = url.host?.lowercased(), !host.isEmpty else { return false }
+        let suffix = hostSuffix.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !suffix.isEmpty else { return false }
+        let dotted = suffix.hasPrefix(".") ? suffix : "." + suffix
+        return host.hasSuffix(dotted) && host.count > dotted.count
+    }
 }
 
 public enum RelayError: Error, Equatable, LocalizedError {
     case notConfigured
     case unauthorized
+    case signInRequired
     case http(status: Int, code: String, detail: String)
     case badResponse
     case transport(String)
 
     public var errorDescription: String? {
         switch self {
-        case .notConfigured: return "Set the relay URL and token in Settings."
-        case .unauthorized: return "The relay refused the token."
+        case .notConfigured: return "Set the relay URL in Settings, and sign in or set a dev token."
+        case .unauthorized: return "The relay refused this app's credentials. Check the dev token, or sign in again in Settings."
+        case .signInRequired: return "Your sign-in has ended. Sign in again in Settings."
         case .http(let status, let code, let detail): return "The relay answered \(status) \(code): \(detail)"
         case .badResponse: return "The relay's answer could not be read."
         case .transport(let what): return "The relay could not be reached (\(what))."
@@ -42,27 +55,77 @@ public enum RelayError: Error, Equatable, LocalizedError {
     }
 }
 
-/// The relay's API, for the app. Every call carries the bearer token.
-public final class RelayClient: @unchecked Sendable {
-    public let configuration: RelayConfiguration
-    private let session: URLSession
+/// Where the relay client gets its bearer token: a fixed dev token, or the
+/// signed-in session that refreshes its access token (`TokenSession`).
+public protocol BearerProvider: Sendable {
+    /// The token to send now. A session refreshes one that is about to expire.
+    func currentToken() async throws -> String
+    /// After the relay refused `rejected` (401): a different token to retry
+    /// with once, or `nil` when there is none. Throws `RelayError.signInRequired`
+    /// when the session has ended.
+    func tokenAfterRejection(_ rejected: String) async throws -> String?
+}
 
-    public init(configuration: RelayConfiguration, session: URLSession = .shared) {
-        self.configuration = configuration
+/// A fixed token: the dev relay's, or P1's static bearer.
+public struct StaticBearer: BearerProvider {
+    public let token: String
+
+    public init(token: String) {
+        self.token = token
+    }
+
+    public func currentToken() async throws -> String {
+        guard !token.isEmpty else { throw RelayError.notConfigured }
+        return token
+    }
+
+    public func tokenAfterRejection(_ rejected: String) async throws -> String? { nil }
+}
+
+/// Relay calls follow a redirect only within the same origin (scheme, host
+/// and port), so the bearer token never goes to another host.
+public final class SameOriginRedirects: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    public func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                           newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(Self.allows(from: task.originalRequest?.url, to: request.url) ? request : nil)
+    }
+
+    static func allows(from: URL?, to: URL?) -> Bool {
+        guard let from, let to else { return false }
+        return from.scheme?.lowercased() == to.scheme?.lowercased() && from.host?.lowercased() == to.host?.lowercased()
+            && from.port == to.port
+    }
+}
+
+/// The relay's API, for the app. Every call carries the current bearer token;
+/// a call the relay refuses with 401 is retried once with a fresh token.
+public final class RelayClient: @unchecked Sendable {
+    public let baseURL: URL
+    public let auth: BearerProvider
+    private let session: URLSession
+    private let redirects = SameOriginRedirects()
+
+    public init(baseURL: URL, auth: BearerProvider, session: URLSession = .shared) {
+        self.baseURL = baseURL
+        self.auth = auth
         self.session = session
+    }
+
+    public convenience init(configuration: RelayConfiguration, session: URLSession = .shared) {
+        self.init(baseURL: configuration.baseURL, auth: StaticBearer(token: configuration.token), session: session)
     }
 
     public func url(_ path: String) -> URL {
         // Paths from the relay are absolute ("/api/v1/..."); keep any base path.
-        var base = configuration.baseURL.absoluteString
+        var base = baseURL.absoluteString
         while base.hasSuffix("/") { base.removeLast() }
         return URL(string: base + (path.hasPrefix("/") ? path : "/" + path))!
     }
 
-    func request(_ path: String, method: String = "GET", body: Data? = nil) -> URLRequest {
+    func request(_ path: String, method: String = "GET", body: Data? = nil, token: String) -> URLRequest {
         var req = URLRequest(url: url(path))
         req.httpMethod = method
-        req.setValue("Bearer \(configuration.token)", forHTTPHeaderField: "Authorization")
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         if let body {
             req.httpBody = body
@@ -72,15 +135,48 @@ public final class RelayClient: @unchecked Sendable {
         return req
     }
 
-    func send<T: Decodable>(_ req: URLRequest, as type: T.Type) async throws -> T {
-        let data: Data
-        let response: URLResponse
+    /// Runs `operation` with the current token and, if the relay refuses it
+    /// (401), once more with the token the provider offers instead.
+    func authorized<T>(_ operation: (String) async throws -> T) async throws -> T {
+        let token = try await currentToken()
         do {
-            (data, response) = try await session.data(for: req)
+            return try await operation(token)
+        } catch RelayError.unauthorized {
+            guard let fresh = try await auth.tokenAfterRejection(token), fresh != token else {
+                throw RelayError.unauthorized
+            }
+            return try await operation(fresh)
+        }
+    }
+
+    private func currentToken() async throws -> String {
+        do {
+            return try await auth.currentToken()
+        } catch let error as RelayError {
+            throw error
         } catch {
             throw RelayError.transport((error as NSError).localizedDescription)
         }
-        try Self.check(response, data)
+    }
+
+    /// The response body of a successful call; 401 is `RelayError.unauthorized`.
+    func data(_ path: String, method: String = "GET", body: Data? = nil) async throws -> Data {
+        try await authorized { token in
+            let req = request(path, method: method, body: body, token: token)
+            let data: Data
+            let response: URLResponse
+            do {
+                (data, response) = try await session.data(for: req, delegate: redirects)
+            } catch {
+                throw RelayError.transport((error as NSError).localizedDescription)
+            }
+            try Self.check(response, data)
+            return data
+        }
+    }
+
+    func send<T: Decodable>(_ path: String, method: String = "GET", body: Data? = nil, as type: T.Type) async throws -> T {
+        let data = try await data(path, method: method, body: body)
         do {
             return try ParleyJSON.decoder.decode(T.self, from: data)
         } catch {
@@ -101,16 +197,16 @@ public final class RelayClient: @unchecked Sendable {
     // MARK: Conversations
 
     public func listConversations() async throws -> [Conversation] {
-        try await send(request("/api/v1/conversations"), as: ConversationList.self).conversations
+        try await send("/api/v1/conversations", as: ConversationList.self).conversations
     }
 
     public func createConversation(title: String? = nil) async throws -> Conversation {
         let body = try JSONSerialization.data(withJSONObject: title.map { ["title": $0] } ?? [String: String]())
-        return try await send(request("/api/v1/conversations", method: "POST", body: body), as: Conversation.self)
+        return try await send("/api/v1/conversations", method: "POST", body: body, as: Conversation.self)
     }
 
     public func conversation(id: String) async throws -> Conversation {
-        try await send(request("/api/v1/conversations/\(id)"), as: Conversation.self)
+        try await send("/api/v1/conversations/\(id)", as: Conversation.self)
     }
 
     // MARK: Turns
@@ -119,24 +215,17 @@ public final class RelayClient: @unchecked Sendable {
     /// answers the turn it already has.
     public func sendTurn(conversationID: String, text: String, clientTurnID: String) async throws -> Turn {
         let body = try JSONSerialization.data(withJSONObject: ["text": text, "client_turn_id": clientTurnID])
-        return try await send(request("/api/v1/conversations/\(conversationID)/turns", method: "POST", body: body),
+        return try await send("/api/v1/conversations/\(conversationID)/turns", method: "POST", body: body,
                               as: Turn.self)
     }
 
     public func turn(conversationID: String, turnID: String) async throws -> Turn {
-        try await send(request("/api/v1/conversations/\(conversationID)/turns/\(turnID)"), as: Turn.self)
+        try await send("/api/v1/conversations/\(conversationID)/turns/\(turnID)", as: Turn.self)
     }
 
     public func timingsData(for turn: Turn) async throws -> Data {
         guard let path = turn.timingsUrl else { throw RelayError.badResponse }
-        let (data, response): (Data, URLResponse)
-        do {
-            (data, response) = try await session.data(for: request(path))
-        } catch {
-            throw RelayError.transport((error as NSError).localizedDescription)
-        }
-        try Self.check(response, data)
-        return data
+        return try await data(path)
     }
 
     public func timings(for turn: Turn) async throws -> Timings {
@@ -151,15 +240,19 @@ public final class RelayClient: @unchecked Sendable {
     /// Download a ready turn's audio to `destination` (replacing a file there).
     public func downloadAudio(for turn: Turn, to destination: URL) async throws {
         guard let path = turn.audio?.url else { throw RelayError.badResponse }
-        let (tmp, response): (URL, URLResponse)
-        do {
-            (tmp, response) = try await session.download(for: request(path))
-        } catch {
-            throw RelayError.transport((error as NSError).localizedDescription)
-        }
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            let data = (try? Data(contentsOf: tmp)) ?? Data()
-            try Self.check(response, data)
+        let tmp: URL = try await authorized { token in
+            let (tmp, response): (URL, URLResponse)
+            do {
+                (tmp, response) = try await session.download(for: request(path, token: token), delegate: redirects)
+            } catch {
+                throw RelayError.transport((error as NSError).localizedDescription)
+            }
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                let data = (try? Data(contentsOf: tmp)) ?? Data()
+                try? FileManager.default.removeItem(at: tmp)
+                try Self.check(response, data)
+            }
+            return tmp
         }
         let fm = FileManager.default
         try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -171,17 +264,28 @@ public final class RelayClient: @unchecked Sendable {
 
     /// The conversation's `turn.updated` events after `after`, as they happen.
     /// The stream ends when the relay closes it (every 10 minutes) or on error;
-    /// the caller reconnects with the last event id.
+    /// the caller reconnects with the last event id, and so with the token
+    /// that is current then. Opening it is retried once after a 401.
     public func events(conversationID: String, after: Int) -> AsyncThrowingStream<RelayEvent, Error> {
-        var req = request("/api/v1/conversations/\(conversationID)/events?after=\(after)")
-        req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-        req.timeoutInterval = 60 * 15
+        let path = "/api/v1/conversations/\(conversationID)/events?after=\(after)"
         let session = self.session
+        let redirects = self.redirects
         return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    let (bytes, response) = try await session.bytes(for: req)
-                    try Self.check(response, Data())
+                    let bytes: URLSession.AsyncBytes = try await self.authorized { token in
+                        var req = self.request(path, token: token)
+                        req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+                        req.timeoutInterval = 60 * 15
+                        let (bytes, response): (URLSession.AsyncBytes, URLResponse)
+                        do {
+                            (bytes, response) = try await session.bytes(for: req, delegate: redirects)
+                        } catch {
+                            throw RelayError.transport((error as NSError).localizedDescription)
+                        }
+                        try Self.check(response, Data())
+                        return bytes
+                    }
                     var parser = SSEParser(lastEventID: String(after))
                     var buffer: [UInt8] = []
                     var chunk: [UInt8] = []

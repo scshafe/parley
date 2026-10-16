@@ -313,6 +313,21 @@ is the reference. The app's P2 work is recorded separately.
 - OpenClaw's docs list `status` `incomplete` (a reply cut at the token limit). The adapter reads its text like a completed one.
 - It has been run only against a local stand-in so far. The real run waits for runbook Stage 6 (the endpoint enabled) and Stage 7c (the password file).
 
+## P2 build decisions: the app
+
+Details the P2 build settled for the iOS app (2026-10-16). The code is the reference.
+
+- **Sign-in.** OIDC authorization code with PKCE (S256), as Pocket ID's public client `parley-ios`.
+  - The issuer and client id are build settings (`PARLEY_OIDC_ISSUER`, `PARLEY_OIDC_CLIENT_ID`) read from the Info.plist; the endpoints come from the issuer's discovery document.
+  - The redirect is `com.scshafe.parley://oauth/callback`, a URL scheme the app registers. The sign-in page opens in an ephemeral `ASWebAuthenticationSession` (no shared cookies, no "wants to sign in" prompt; a passkey works).
+  - Scopes `openid profile email offline_access` (`offline_access` only if the issuer lists it).
+  - The callback's `state`, its `iss` when present (RFC 9207), and the ID token's issuer, audience and nonce are checked. The ID token's signature is not: it comes straight from the token endpoint over TLS, and its claims only name the account in Settings. The relay's door verifies the access token.
+- **Tokens.** The access token, refresh token and ID token are one Keychain item (this device only, after first unlock), updated in place so a failed write keeps the old one. The access token is refreshed a minute before it expires, one refresh at a time, inside a background task so a rotated refresh token is saved even as the app leaves the foreground. A refresh that Pocket ID refuses (400 or 401) signs the app out; a network error does not. A refresh that finishes after a sign-out is dropped.
+- **Where the token goes.** The session's access token is sent only over https to a relay host under `PARLEY_RELAY_HOST_SUFFIX` (a build setting, the tailnet's suffix by default); any other relay, including a plain-http dev relay, needs a dev token. Relay calls follow redirects only within the same scheme, host and port. Discovered endpoints must be https unless the issuer itself is http.
+- **Networking with the token (B13).** Every relay call carries the current access token. A 401 is retried once with a fresh token, but a rejection refreshes at most once in 30 seconds: a relay that keeps refusing fresh tokens (a wrong door audience, a dev relay) gets `unauthorized`, not a refresh loop. Audio and timings are downloaded with the token; the player plays the downloaded file. The event stream opens with the current token (retried once after a 401) and reconnects when the sign-in changes or the app returns to the foreground; after a refresh, it uses the new token at its next reconnect.
+- **Signing out** forgets the tokens, revokes the refresh token if the issuer's discovery document lists a `revocation_endpoint` (Pocket ID v2.13 lists none, so the token stays valid at Pocket ID until it expires, 30 days for `parley-ios`), and clears the cached conversations, turns and reply audio. The Keychain outlives a deleted app, so the first launch of a new install (no `installed` marker in UserDefaults) clears the app's Keychain items.
+- **The dev relay.** A dev token (Settings, *Dev relay*), when set, is sent as is instead of the sign-in. UI tests set it through the environment and never touch the Keychain.
+
 ## Decisions (owner, 2026-10-15: the recommendations accepted)
 
 | Id | Question | Decision |

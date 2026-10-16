@@ -87,6 +87,13 @@ enum CacheStore {
         return ((try? context.fetch(descriptor)) ?? []).compactMap(\.turn)
     }
 
+    /// Forget every cached conversation and turn (signing out).
+    static func removeAll(in context: ModelContext) {
+        try? context.delete(model: CachedTurn.self)
+        try? context.delete(model: CachedConversation.self)
+        try? context.save()
+    }
+
     static func timings(turnID: String, in context: ModelContext) -> Data? {
         try? context.fetch(FetchDescriptor<CachedTurn>(predicate: #Predicate { $0.id == turnID })).first?.timings
     }
@@ -107,6 +114,10 @@ enum AudioCache {
 
     static func file(for turnID: String) -> URL {
         directory.appendingPathComponent("\(turnID).wav")
+    }
+
+    static func removeAll() {
+        try? FileManager.default.removeItem(at: directory)
     }
 
     static func prune(olderThanDays days: Int) {

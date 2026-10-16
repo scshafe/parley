@@ -24,8 +24,10 @@ struct ParleyApp: App {
 
 struct RootView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.scenePhase) private var scenePhase
     @State private var path = NavigationPath()
     @State private var showSettings = false
+    @State private var wasInBackground = false
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -42,6 +44,14 @@ struct RootView: View {
         }
         .onAppear {
             if !model.isConfigured { showSettings = true }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // background -> inactive -> active: count a return from the background.
+            if phase == .background { wasInBackground = true }
+            if phase == .active && wasInBackground {
+                wasInBackground = false
+                model.cameToForeground()
+            }
         }
     }
 }
