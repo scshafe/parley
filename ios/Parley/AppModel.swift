@@ -47,6 +47,10 @@ final class AppModel {
     let notifier = Notifier()
     /// A notification the person tapped, for the root view to open.
     private(set) var pendingRoute: NotificationRoute?
+    /// Bumped each time the Action Button's intent runs (`NewConversationIntent`):
+    /// the root view opens a new conversation and listens, or, while it
+    /// listens, sends.
+    private(set) var dictatedConversationRequests = 0
 
     /// Whether the root view shows the login screen instead of the conversations.
     var showsLogin: Bool { !isSignedIn || awaitingRelayCheck }
@@ -75,6 +79,7 @@ final class AppModel {
             TokenSession(client: OIDCClient(configuration: $0), store: store, keepAlive: BackgroundRefresh())
         }
         notifier.model = self
+        if UITestSeam.current?.opensNewDictatedConversation == true { dictatedConversationRequests = 1 }
         if let session {
             Task { [weak self] in
                 await session.setOnChange { change in
@@ -150,6 +155,12 @@ final class AppModel {
 
     func clearPendingRoute() {
         pendingRoute = nil
+    }
+
+    // MARK: The Action Button
+
+    func requestNewDictatedConversation() {
+        dictatedConversationRequests += 1
     }
 
     // MARK: Signing in

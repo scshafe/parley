@@ -14,6 +14,10 @@ import ParleyKit
 /// - `PARLEY_UI_TEST_SIGNED_IN=1`: start signed in; otherwise the app starts
 ///   on the login screen, and its Sign in button signs the fake session in
 ///   without opening Pocket ID.
+/// - `PARLEY_UI_TEST_DICTATION`: dictation "hears" these words, one every
+///   0.3 s, instead of the microphone (no permission prompts).
+/// - `PARLEY_UI_TEST_NEW_DICTATED_CONVERSATION=1`: at launch, do what the
+///   Action Button's intent does (`NewConversationIntent`).
 ///
 /// With the seam on, the relay URL may also be plain http to this machine,
 /// nothing is saved (the session lives in memory) and the cache is in memory.
@@ -21,6 +25,8 @@ struct UITestSeam {
     let relayURL: String
     let tokens: OIDCTokens
     let startsSignedIn: Bool
+    let dictationScript: String?
+    let opensNewDictatedConversation: Bool
 
     static let current: UITestSeam? = {
         #if DEBUG && targetEnvironment(simulator)
@@ -32,7 +38,9 @@ struct UITestSeam {
             relayURL: env["PARLEY_UI_TEST_RELAY_URL"] ?? "http://127.0.0.1:8765",
             tokens: OIDCTokens(accessToken: token, refreshToken: nil, idToken: nil, expiresAt: .distantFuture,
                                account: account),
-            startsSignedIn: env["PARLEY_UI_TEST_SIGNED_IN"] == "1")
+            startsSignedIn: env["PARLEY_UI_TEST_SIGNED_IN"] == "1",
+            dictationScript: env["PARLEY_UI_TEST_DICTATION"].flatMap { $0.isEmpty ? nil : $0 },
+            opensNewDictatedConversation: env["PARLEY_UI_TEST_NEW_DICTATED_CONVERSATION"] == "1")
         #else
         return nil
         #endif

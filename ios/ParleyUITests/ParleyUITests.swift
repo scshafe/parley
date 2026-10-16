@@ -14,13 +14,14 @@ final class ParleyUITests: XCTestCase {
         continueAfterFailure = false
     }
 
-    private func launch(signedIn: Bool = true) -> XCUIApplication {
+    private func launch(signedIn: Bool = true, extra: [String: String] = [:]) -> XCUIApplication {
         let app = XCUIApplication()
         let env = ProcessInfo.processInfo.environment
         app.launchEnvironment["PARLEY_UI_TESTING"] = "1"
         app.launchEnvironment["PARLEY_UI_TEST_RELAY_URL"] = relayURL
         app.launchEnvironment["PARLEY_UI_TEST_ACCESS_TOKEN"] = env["PARLEY_UI_TEST_ACCESS_TOKEN"] ?? "parley-dev"
         app.launchEnvironment["PARLEY_UI_TEST_SIGNED_IN"] = signedIn ? "1" : "0"
+        for (k, v) in extra { app.launchEnvironment[k] = v }
         app.launch()
         return app
     }
@@ -167,5 +168,50 @@ final class ParleyUITests: XCTestCase {
         play.tap()
         XCTAssertTrue(app.descendants(matching: .any)["attachment"].firstMatch.waitForExistence(timeout: 20))
         screenshot(app, "reader-attachment")
+    }
+
+    /// The Action Button's intent, through the seam: a new conversation opens
+    /// listening, the words appear as they are "heard", and the message goes
+    /// by itself after the pause.
+    func testTheActionButtonOpensAListeningConversationThatSendsWhenYouPause() throws {
+        let app = launch(extra: [
+            "PARLEY_UI_TEST_DICTATION": "What should I cook tonight?",
+            "PARLEY_UI_TEST_NEW_DICTATED_CONVERSATION": "1",
+        ])
+        let listening = app.descendants(matching: .any)["listeningIndicator"].firstMatch
+        XCTAssertTrue(listening.waitForExistence(timeout: 20), "the new conversation is not listening")
+        let field = app.descendants(matching: .any)["composerField"].firstMatch
+        let heard = NSPredicate(format: "value CONTAINS %@", "cook")
+        expectation(for: heard, evaluatedWith: field)
+        waitForExpectations(timeout: 10)
+        screenshot(app, "dictation-listening")
+        // Sent with no tap, after the pause.
+        let state = app.descendants(matching: .any)["turnState-1"].firstMatch
+        XCTAssertTrue(state.waitForExistence(timeout: 20), "the dictated message was not sent")
+        XCTAssertFalse(listening.exists)
+        XCTAssertTrue(app.staticTexts["What should I cook tonight?"].exists)
+        XCTAssertTrue(app.buttons["playTurn-1"].waitForExistence(timeout: 90), "the turn never became ready")
+        screenshot(app, "dictation-sent")
+    }
+
+    /// The composer's mic: the words go into the draft and wait for Send.
+    func testTheMicDictatesIntoTheDraft() throws {
+        let app = launch(extra: ["PARLEY_UI_TEST_DICTATION": "Remind me about the bread"])
+        let newConversation = app.buttons["newConversation"]
+        XCTAssertTrue(newConversation.waitForExistence(timeout: 20))
+        newConversation.tap()
+        let mic = app.buttons["micButton"]
+        XCTAssertTrue(mic.waitForExistence(timeout: 10))
+        mic.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["listeningIndicator"].firstMatch.waitForExistence(timeout: 10))
+        let field = app.descendants(matching: .any)["composerField"].firstMatch
+        expectation(for: NSPredicate(format: "value CONTAINS %@", "bread"), evaluatedWith: field)
+        waitForExpectations(timeout: 10)
+        // No auto-send here: well past the pause, nothing has gone.
+        Thread.sleep(forTimeInterval: 3.5)
+        XCTAssertFalse(app.descendants(matching: .any)["turnState-1"].firstMatch.exists)
+        app.buttons["sendButton"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["turnState-1"].firstMatch.waitForExistence(timeout: 20))
+        XCTAssertFalse(app.descendants(matching: .any)["listeningIndicator"].firstMatch.exists)
     }
 }

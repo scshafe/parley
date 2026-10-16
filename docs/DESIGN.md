@@ -338,6 +338,35 @@ Details the P2 build settled for the iOS app (2026-10-16). The code is the refer
   - A notification tap opens the payload's conversation, then the reader when the turn is ready. A newer tap replaces one still loading. A notification for the conversation on screen shows no banner.
 - **Local notifications without push.** A followed turn that becomes ready while the app is in the background, but still running, gets a local notification. It has the same ids and the same fixed text, "Reply ready". On leaving the app with a turn unfinished, the app asks for background time (about 30 seconds) and polls the turn; while a reply plays in the background, the app keeps running. A turn that takes longer than that, with nothing playing, gets no notice until push is on. Once push is registered and the relay says it can push (the registration's `push`), no local notification is sent. The watched turns are cleared when the relay or the sign-in changes, and dropped after 35 minutes (the relay gives up on a turn after 30).
 
+## The Action Button and dictation
+
+What the build settled (2026-10-16). The code is the reference.
+
+- **The intent.** `NewConversationIntent` ("New Parley Conversation", `ios/Parley/Intents.swift`), offered through `ParleyShortcuts`, an `AppShortcutsProvider`. That puts it in Settings → Action Button → Shortcut → Parley and in the Shortcuts app.
+  - It runs in the app (`supportedModes = .foreground(.immediate)`), with no extension, so the free team's one target is enough. A Control Center control (a widget extension) is a follow-up.
+  - It bumps `AppModel.dictatedConversationRequests`. The root view then does one of three things:
+    - while a dictation listens, it sends it ("send now");
+    - while one is finishing, it does nothing;
+    - otherwise it opens a new conversation that listens with auto-send.
+  - Not signed in, the login screen stays.
+- **A new conversation has no id yet.** The conversation view makes it at the relay with its first message, so listening starts without waiting on the network. The composer's `+` still creates one at once.
+- **When it sends** (`DictationMachine`, ParleyKit, unit tested). With auto-send, the message is sent once some words were heard and the transcript then stays unchanged for `silenceToSend` (2 s). Silence is measured on the transcript, not the audio level, so background noise does not hold it open.
+  - **Send**, or the Action Button again, sends at once; with nothing heard, it stops instead.
+  - **Cancel** discards.
+  - `idleTimeout` (20 s) without a new word, or without any word, stops: nothing is sent with auto-send, and the words stay in the draft without it.
+  - On a failure, what was heard stays in the draft.
+  - The final transcript (after the engine finalizes) is what is sent.
+- **The composer's mic** uses the same machine without auto-send: the words go after what was typed, and wait for **Send** or another tap on the mic.
+- **Speech.** iOS 26's `SpeechAnalyzer` (the deployment target is 26.0), on device:
+  - `SpeechTranscriber` when `isAvailable` and the locale is supported, else `DictationTranscriber` (punctuation, the short-form hint);
+  - volatile results for the live text;
+  - the locale's model installed through `AssetInventory` on first use;
+  - the microphone's buffers converted to `bestAvailableAudioFormat`.
+  - If the analyzer cannot start (no model, the simulator), the app falls back to `SFSpeechRecognizer`, with `requiresOnDeviceRecognition` when the device supports it for the locale.
+  - Both need the microphone and speech recognition permissions (`NSMicrophoneUsageDescription`, `NSSpeechRecognitionUsageDescription`). A refusal is shown with where to turn it on.
+- **Audio.** Listening stops any reply playback first, then sets the session to `.record` (`.measurement`, other audio ducked) and deactivates it afterwards. The player sets `.playback` again whenever it loads a reply, so its playback and highlighting are unchanged. Leaving the app while listening stops listening and keeps the words.
+- **UI tests.** The seam adds `PARLEY_UI_TEST_DICTATION`, a scripted engine that "hears" its words one at a time with no microphone, and `PARLEY_UI_TEST_NEW_DICTATED_CONVERSATION`, which does what the intent does at launch. A real microphone, the permission prompts and the Action Button itself are tested only on a phone.
+
 ## Decisions (owner, 2026-10-15: the recommendations accepted)
 
 | Id | Question | Decision |

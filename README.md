@@ -69,6 +69,30 @@ To try a simulator build against the dev relay, use the UI tests' seam (`ios/Par
 
 On the phone, connect Tailscale and open Parley. The login screen shows the relay's address, `https://parley.<tailnet>.ts.net` by default (`PARLEY_DEFAULT_RELAY_URL`; change it there if yours differs). Tap **Sign in**: Pocket ID opens in a sheet and you sign in with your passkey. The app then checks that the relay answers and opens your conversations; if the address is wrong or the relay does not answer, the login screen says so under the address. The session (a refresh token) stays in the phone's Keychain, and the app renews its access token by itself. The token goes only over https to a relay under `PARLEY_RELAY_HOST_SUFFIX` (`ios/project.yml`; your local spec can change it). **Sign out** is in Settings (the gear), and returns to the login screen.
 
+## Talk instead of typing: the Action Button
+
+Parley has one App Shortcut, **New Parley Conversation**. It opens Parley on a new conversation that is already listening: say your first message, and Parley sends it once you pause for about two seconds. The reply comes back as usual.
+
+**Assign it to the Action Button** (iPhone 15 Pro and later): Settings → Action Button → swipe to **Shortcut** → **Choose a Shortcut** → **Parley** → **New Parley Conversation**. It is also in the Shortcuts app, and Siri knows "New Parley conversation" and "Talk to Parley".
+
+Using it:
+
+1. Press the Action Button. Parley opens on a new conversation. A playing reply stops. The bar above the composer says **Listening…**, and your words appear in the message field as you speak.
+2. Stop talking: about two seconds after the last word, the message is sent. Or send it at once by tapping **Send**, or by pressing the Action Button again.
+3. **Cancel** in the listening bar throws the words away. Nothing heard for 20 seconds stops listening, and nothing is sent.
+4. If you are not signed in, Parley opens on its login screen instead.
+
+The **mic** button next to the message field dictates in any conversation. It puts the words in the field without sending them by itself: tap the mic again to stop, or **Send**. Leaving Parley while it listens stops listening and keeps the words in the field.
+
+**The first time** you dictate, iOS asks two questions. Allow both:
+
+- *"Parley" Would Like to Access the Microphone*: "Parley listens while you dictate a message, so you can talk to your agent instead of typing."
+- *"Parley" Would Like to Access Speech Recognition*: "Parley turns what you say into the text of your message. Speech is recognized on this iPhone where it can be."
+
+If you said no, Parley says which one is off. Turn it back on in Settings → Apps → Parley. The first dictation in a language can also download Apple's speech model, which shows "Getting speech recognition ready…".
+
+Speech is recognized on the phone with iOS 26's SpeechAnalyzer: `SpeechTranscriber` where the iPhone supports it, otherwise `DictationTranscriber`. If neither can start (the simulator, for one), Parley falls back to `SFSpeechRecognizer`. That is on device where the iPhone supports it for the language, and otherwise Apple's speech servers.
+
 ## Build and test
 
 ```sh
@@ -82,6 +106,6 @@ CI (`.github/workflows/ci.yml`) runs it on Linux. On `macos-26` it also builds a
 1. `swift test` runs ParleyKit's tests.
 2. XcodeGen generates the project.
 3. `parley-relay --dev` starts on the runner.
-4. `xcodebuild test` runs the UI tests on an iPhone simulator against that relay. They sign in through the app's debug-only UI-test seam (a fake session; no Pocket ID) and cover the login screen's errors, sending a turn, and the reader-player.
+4. `xcodebuild test` runs the UI tests on an iPhone simulator against that relay. They sign in through the app's debug-only UI-test seam (a fake session; no Pocket ID) and cover the login screen's errors, sending a turn, the reader-player, and dictation: the Action Button's listening conversation that sends after the pause, and the composer's mic. A scripted "speech" stands in for the microphone.
 
 The test results, with screenshots, are kept as the run's `ios-test-results` artifact.
