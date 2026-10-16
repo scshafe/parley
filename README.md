@@ -39,11 +39,15 @@ In the app's settings, the relay is `http://127.0.0.1:8765` and the token is `pa
 `ios/project.yml` is unsigned, so CI can build it for the simulator. To run the app on a phone, sign it with your own team in a local spec that Git ignores. A free Apple ID (a "personal team") is enough to install and run Parley. It cannot sign push notifications, and its builds stop opening after 7 days.
 
 1. **Add your Apple ID to Xcode:** Xcode → Settings → Accounts → **+** → Apple ID.
-2. **Find your Team ID** (10 characters; it is not a secret). Either pick your team once under the Parley target's *Signing & Capabilities* and read *Development Team* in its build settings, or, after Xcode has made your development certificate, run:
+2. **Find your Team ID** (10 characters; it is not a secret). Xcode lists every team your accounts belong to, with its ID, name and type ("Personal Team" for a free Apple ID):
 
    ```sh
-   security find-certificate -c "Apple Development" -p | openssl x509 -noout -subject   # OU=<Team ID>
+   defaults read com.apple.dt.Xcode IDEProvisioningTeamByIdentifier | grep -E 'teamID|teamName|teamType'
    ```
+
+   Or pick your team once under the Parley target's *Signing & Capabilities*; *Development Team* in its build settings then shows the ID. (Reading it from an "Apple Development" certificate is unreliable when you have several.)
+
+   A free team can use the bundle id `com.scshafe.parley` only if no other team has registered it, and it can register at most 10 App IDs in 7 days. If Xcode refuses the id, set another one as `PARLEY_BUNDLE_ID` in your local spec.
 3. **Write the local spec** and generate the project from it:
 
    ```sh
