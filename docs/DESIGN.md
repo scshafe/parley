@@ -199,7 +199,7 @@ reference.
   - It sends `user: "parley:<conversation>"` for the session, and the style text as `instructions`.
   - It reads `output_text`, or else the `output_text` parts of `output[].content[]`.
   - It has been tested only against a local fake.
-- **Push payload.** `{"aps": {"alert": "Reply ready", "sound": "default"}, "conversation_id", "turn_id"}`. P1 records the payload and does not send it.
+- **Push payload.** `{"aps": {"alert": "Reply ready", "sound": "default"}, "conversation_id", "turn_id"}`. P1 records the payload and does not send it (P2 sends it through APNs).
 - **Retention.** An hourly sweep deletes audio older than 30 days. Text and timings stay (P-Q5).
 
 **`timings.json` (`parley.timings/v1`)**
@@ -286,6 +286,20 @@ is the reference. The app's P2 work is recorded separately.
   - no webhook secret: the webhook answers `503 webhook_not_configured`, and polling carries the turn.
 - Real mode refuses to start without `PARLEY_OIDC_ISSUER`, `PARLEY_OWNER_SUBJECT` and `PARLEY_VOICELAB_URL`.
 - One start-up line names the auth mode, the agent, the speech caller, the webhook and push, and whether each secret file is present. It never shows a value.
+
+**Push and devices** (`relay/src/parley_relay/push.py`; the API in the relay's README).
+
+- **Devices.** The app registers with `POST /api/v1/devices {token, environment}`. `environment` is `sandbox` (or `development`, the entitlement's word for a debug build) or `production`. Registering the same token again answers `200` with the same device and updates its environment. `DELETE /api/v1/devices/{id}` removes a device. `GET /api/v1/devices` lists the devices and says whether push is on (`push`).
+  - The token is stored in SQLite, sent only to Apple, and never logged or returned. Logs name device ids only.
+- **APNs.** HTTP/2 only (`httpx[http2]`), with token-based auth: an ES256 provider token from the `.p8` key, `{alg, kid}` `{iss: team id, iat}`. It is reused for 50 minutes; Apple's window is 20 to 60.
+  - Headers: `apns-topic: com.scshafe.parley`, `apns-push-type: alert`, `apns-priority: 10`, a 24-hour `apns-expiration`, and the turn id as `apns-collapse-id`.
+  - The payload is P1's, ids only.
+  - Each device's environment picks the host (`api.sandbox.push.apple.com` or `api.push.apple.com`), so a debug build and a release can both be registered.
+  - `410`, or `400 BadDeviceToken` / `Unregistered`, forgets the device. A refused provider token (`ExpiredProviderToken`, `InvalidProviderToken`) is renewed and the push retried once. Any other refusal is logged.
+- **Optional, and off today.** Push needs a paid Apple Developer Program membership; the owner has a free Apple ID for now (P-Q1 is pending). Without the key id, the team id or the key file, push is off: the start-up line says so, and so does one log line when the state changes, not once per turn. The relay stays healthy, and the app learns that a turn is ready from its event stream.
+  - The key file is read on use, so placing it later turns push on without a restart.
+  - A push never fails a turn: a ready turn is marked pushed whatever APNs answers.
+- **Tests.** A local HTTP/2 APNs fake (h2, cleartext prior knowledge) checks the provider token's signature, the headers, pruning, renewal and the hosts.
 
 ## Decisions (owner, 2026-10-15: the recommendations accepted)
 
