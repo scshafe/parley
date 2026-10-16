@@ -59,6 +59,10 @@ struct ConversationView: View {
         // Reconnects when the relay, the sign-in or its access token changes,
         // and when the app comes back to the foreground.
         .task(id: model.streamKey) { await follow() }
+        .onAppear { model.notifier.visibleConversationID = conversationID }
+        .onDisappear {
+            if model.notifier.visibleConversationID == conversationID { model.notifier.visibleConversationID = nil }
+        }
     }
 
     private var composer: some View {
@@ -117,6 +121,7 @@ struct ConversationView: View {
             turns.sort { $0.seq < $1.seq }
         }
         CacheStore.save(turns: [turn], in: context)
+        model.notifier.observe(turn)
     }
 
     private func refresh(_ client: RelayClient) async throws {

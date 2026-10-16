@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyLists-1.0.dtd">
+<!-- Used only when PARLEY_PUSH = YES (ios/project.yml): a free (personal)
+     team cannot sign aps-environment, so default builds carry no entitlements.
+     aps-environment is development for every configuration: Xcode's export
+     (App Store, TestFlight, ad hoc) rewrites it, and the app reads the
+     environment its tokens belong to from its provisioning profile. -->
+<plist version="1.0">
+<dict>
+	<key>aps-environment</key>
+	<string>development</string>
+</dict>
+</plist>

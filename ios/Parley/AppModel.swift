@@ -21,6 +21,8 @@ typealias ParleyKitTurn = ParleyKit.Turn
 @MainActor
 final class AppModel {
     static let isUITesting = ProcessInfo.processInfo.environment["PARLEY_UI_TESTING"] == "1"
+    /// The one model, shared with the app delegate (push and notification taps).
+    static let shared = AppModel()
 
     enum AuthMode: Equatable {
         case devToken
@@ -45,6 +47,9 @@ final class AppModel {
     /// Relay hosts that may receive the session token (`PARLEY_RELAY_HOST_SUFFIX`).
     let relayHostSuffix: String
     @ObservationIgnored let session: TokenSession?
+    let notifier = Notifier()
+    /// A notification the person tapped, for the root view to open.
+    private(set) var pendingRoute: NotificationRoute?
 
     init() {
         let env = ProcessInfo.processInfo.environment
@@ -68,6 +73,7 @@ final class AppModel {
         session = oidcConfiguration.map {
             TokenSession(client: OIDCClient(configuration: $0), store: store, keepAlive: BackgroundRefresh())
         }
+        notifier.model = self
         if let session {
             Task { [weak self] in
                 await session.setOnChange { change in
@@ -81,6 +87,12 @@ final class AppModel {
 
     /// Save new settings: the URL to UserDefaults, the dev token to the Keychain.
     func update(relayURL: String, devToken: String) {
+        if relayURL != relayURLString {
+            // Push stops at the old relay, with its own credentials.
+            let oldRelay = relayURLString
+            let oldClient = client
+            Task { await notifier.unregister(from: oldRelay, using: oldClient) }
+        }
         relayURLString = relayURL
         self.devToken = devToken
         if !AppModel.isUITesting {
@@ -137,6 +149,16 @@ final class AppModel {
         foregroundGeneration += 1
     }
 
+    // MARK: Notifications
+
+    func open(_ route: NotificationRoute) {
+        pendingRoute = route
+    }
+
+    func clearPendingRoute() {
+        pendingRoute = nil
+    }
+
     // MARK: Signing in
 
     /// Pocket ID's sign-in page in a web authentication session, then the code
@@ -157,7 +179,10 @@ final class AppModel {
         apply(.signedIn(tokens.account))
     }
 
+    /// Sign out: first stop push at the relay (that needs the token), then
+    /// forget the tokens.
     func signOut() async {
+        if authMode == .signedIn { await notifier.unregister(from: relayURLString, using: client) }
         await session?.signOut()
         apply(.signedOut)
     }

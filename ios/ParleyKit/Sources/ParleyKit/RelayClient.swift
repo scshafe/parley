@@ -260,6 +260,27 @@ public final class RelayClient: @unchecked Sendable {
         try fm.moveItem(at: tmp, to: destination)
     }
 
+    // MARK: Devices
+
+    /// Register this phone's APNs device token for "reply ready" pushes.
+    /// `environment` is the APNs environment the token belongs to: `sandbox`
+    /// (a development-signed build) or `production`. Registering the same
+    /// token again answers the same device.
+    public func registerDevice(token: String, environment: String) async throws -> DeviceRegistration {
+        let body = try JSONSerialization.data(withJSONObject: ["token": token, "environment": environment])
+        return try await send("/api/v1/devices", method: "POST", body: body, as: DeviceRegistration.self)
+    }
+
+    /// Stop pushes to a registered device. An id the relay no longer knows
+    /// (404) counts as done.
+    public func unregisterDevice(id: String) async throws {
+        do {
+            _ = try await data("/api/v1/devices/\(id)", method: "DELETE")
+        } catch RelayError.http(status: 404, _, _) {
+            return
+        }
+    }
+
     // MARK: Events
 
     /// The conversation's `turn.updated` events after `after`, as they happen.

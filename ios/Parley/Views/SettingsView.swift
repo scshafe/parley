@@ -17,7 +17,6 @@ struct SettingsView: View {
     @State private var checkResult: String?
     @State private var signInError: String?
     @State private var signingIn = false
-    @State private var notificationStatus: UNAuthorizationStatus = .notDetermined
 
     var body: some View {
         NavigationStack {
@@ -58,13 +57,17 @@ struct SettingsView: View {
                 }
                 Section {
                     LabeledContent("Status", value: notificationLabel)
-                    if notificationStatus == .notDetermined {
-                        Button("Allow notifications") { Task { await requestNotifications() } }
+                        .accessibilityIdentifier("notificationStatus")
+                    if model.notifier.authorization == .notDetermined {
+                        Button("Allow notifications") { Task { await model.notifier.requestAuthorization() } }
+                            .accessibilityIdentifier("allowNotifications")
                     }
+                    LabeledContent("Push", value: pushLabel)
+                        .accessibilityIdentifier("pushStatus")
                 } header: {
                     Text("Notifications")
                 } footer: {
-                    Text("Parley will tell you when a reply is ready to hear. Push arrives in a later version; for now the app follows turns while it is open.")
+                    Text(notificationFooter)
                 }
                 Section("About") {
                     LabeledContent("Version", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")
@@ -82,7 +85,7 @@ struct SettingsView: View {
                 urlText = model.relayURLString
                 tokenText = model.devToken
             }
-            .task { await refreshNotificationStatus() }
+            .task { await model.notifier.refreshAuthorization() }
         }
     }
 
@@ -139,7 +142,7 @@ struct SettingsView: View {
     }
 
     private var notificationLabel: String {
-        switch notificationStatus {
+        switch model.notifier.authorization {
         case .authorized, .provisional, .ephemeral: return "Allowed"
         case .denied: return "Off (change it in Settings)"
         case .notDetermined: return "Not asked yet"
@@ -189,12 +192,26 @@ struct SettingsView: View {
         }
     }
 
-    private func refreshNotificationStatus() async {
-        notificationStatus = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
+    private var pushLabel: String {
+        switch model.notifier.pushState {
+        case .offInThisBuild: return "Off in this build"
+        case .notRegistered: return "Not registered yet"
+        case .registering: return "Registering…"
+        case .registered(let relayCanPush): return relayCanPush ? "On" : "Registered (the relay cannot push yet)"
+        case .failed: return "Not registered"
+        }
     }
 
-    private func requestNotifications() async {
-        _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge])
-        await refreshNotificationStatus()
+    private var notificationFooter: String {
+        var text = "Parley tells you when a reply is ready to hear."
+        switch model.notifier.pushState {
+        case .offInThisBuild:
+            text += " This build has no push (it needs a paid Apple developer team), so the notice comes only while Parley still runs in the background: shortly after you leave it, or while it plays a reply."
+        case .failed(let why):
+            text += " Push could not be set up: \(why)"
+        default:
+            break
+        }
+        return text
     }
 }

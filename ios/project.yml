@@ -28,6 +28,12 @@ settings:
     # The signed-in session's token is sent only over https to a relay host
     # under this suffix; any other relay needs a dev token.
     PARLEY_RELAY_HOST_SUFFIX: .colobus-stargazer.ts.net
+    # Push notifications (B11) are opt-in: NO builds with no entitlements and
+    # never registers for remote notifications, which a free (personal) team
+    # needs. With a paid team, set PARLEY_PUSH: YES in ios/project.local.yml;
+    # the target then signs Entitlements/Parley-Push.entitlements.
+    PARLEY_PUSH: "NO"
+    PARLEY_PUSH_ENTITLEMENTS_YES: Entitlements/Parley-Push.entitlements
 packages:
   ParleyKit:
     path: ParleyKit
@@ -58,6 +64,7 @@ targets:
         ParleyOIDCClientID: $(PARLEY_OIDC_CLIENT_ID)
         ParleyOIDCRedirectURI: com.scshafe.parley://oauth/callback
         ParleyRelayHostSuffix: $(PARLEY_RELAY_HOST_SUFFIX)
+        ParleyPushEnabled: $(PARLEY_PUSH)
         NSAppTransportSecurity:
           # The relay is https on the tailnet; plain http only for a dev relay
           # on this machine (the simulator) or the local network.
@@ -65,6 +72,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(PARLEY_BUNDLE_ID)
+        # Empty unless PARLEY_PUSH is YES.
+        CODE_SIGN_ENTITLEMENTS: $(PARLEY_PUSH_ENTITLEMENTS_$(PARLEY_PUSH))
         TARGETED_DEVICE_FAMILY: "1"
         ENABLE_PREVIEWS: YES
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: ""

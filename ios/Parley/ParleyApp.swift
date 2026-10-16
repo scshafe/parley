@@ -3,7 +3,8 @@ import SwiftUI
 
 @main
 struct ParleyApp: App {
-    @State private var model = AppModel()
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @State private var model = AppModel.shared
     @State private var player = PlayerController()
     private let container: ModelContainer
 
@@ -28,6 +29,7 @@ struct RootView: View {
     @State private var path = NavigationPath()
     @State private var showSettings = false
     @State private var wasInBackground = false
+    @State private var openTask: Task<Void, Never>?
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -47,12 +49,45 @@ struct RootView: View {
         }
         .onChange(of: scenePhase) { _, phase in
             // background -> inactive -> active: count a return from the background.
-            if phase == .background { wasInBackground = true }
-            if phase == .active && wasInBackground {
-                wasInBackground = false
-                model.cameToForeground()
+            if phase == .background {
+                wasInBackground = true
+                model.notifier.enteredBackground()
+            }
+            if phase == .active {
+                model.notifier.becameActive()
+                if wasInBackground {
+                    wasInBackground = false
+                    model.cameToForeground()
+                }
             }
         }
+        // The device token goes to the relay, again when the relay or the sign-in changes.
+        .task(id: model.connectionKey) {
+            model.notifier.connectionChanged()
+            await model.notifier.registerWithRelay()
+        }
+        .onChange(of: model.pendingRoute, initial: true) { _, route in
+            guard let route else { return }
+            model.clearPendingRoute()
+            // A newer tap wins: the older one's fetch must not push its reader.
+            openTask?.cancel()
+            openTask = Task { await open(route) }
+        }
+    }
+}
+
+extension RootView {
+    /// Open a tapped notification: its conversation, then the reader if the
+    /// turn is ready.
+    private func open(_ route: NotificationRoute) async {
+        showSettings = false
+        var fresh = NavigationPath()
+        fresh.append(ConversationRoute(id: route.conversationID, title: "Conversation"))
+        path = fresh
+        guard let turnID = route.turnID, let client = model.client,
+              let turn = try? await client.turn(conversationID: route.conversationID, turnID: turnID),
+              turn.state == .ready, !Task.isCancelled else { return }
+        path.append(ReaderRoute(turn: turn))
     }
 }
 

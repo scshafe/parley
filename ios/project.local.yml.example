@@ -13,3 +13,6 @@ settings:
     CODE_SIGN_STYLE: Automatic
     # Only if another team holds com.scshafe.parley:
     # PARLEY_BUNDLE_ID: com.example.parley
+    # Push notifications need a paid Apple Developer Program team (a free
+    # team cannot sign aps-environment). With one, uncomment:
+    # PARLEY_PUSH: "YES"
