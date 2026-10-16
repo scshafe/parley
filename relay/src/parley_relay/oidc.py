@@ -21,6 +21,7 @@ from urllib.parse import quote
 
 import httpx
 
+from .auth import same_origin_https
 from .secretfiles import SecretFile, SecretFileError
 
 log = logging.getLogger("parley.oidc")
@@ -102,8 +103,9 @@ class ClientCredentials:
                 endpoint = disco["token_endpoint"]
             except (ValueError, KeyError, TypeError) as exc:
                 raise TokenError("discovery_failed", "no token endpoint") from exc
-            if not isinstance(endpoint, str) or not endpoint.startswith(("https://", "http://")):
-                raise TokenError("discovery_failed", "no token endpoint")
+            if not same_origin_https(endpoint, self.issuer):
+                # Never send the client secret anywhere but the issuer's own https origin.
+                raise TokenError("discovery_failed", "the token endpoint is not https on the issuer's origin")
             self._token_endpoint = endpoint
         return self._token_endpoint
 

@@ -137,3 +137,57 @@ async def test_static_auth_still_serves_dev():
         client = None
 
     assert (await StaticTokenAuth("parley-dev").authenticate(Req())).subject == "dev"
+
+
+async def test_an_outage_serves_the_last_keys_and_backs_off():
+    p = FakeProvider()
+    now = [1000.0]
+    v = verifier(p, clock=lambda: now[0], ttl=3600.0)
+    token = p.keys[0].sign(claims())
+    await v.verify(token)
+    good_handler = p.handler
+    attempts = []
+
+    def down(request):
+        attempts.append(request.url.path)
+        raise httpx.ConnectError("no route")
+
+    p.handler = down
+    now[0] += 3601  # the cache ages out while the provider is down
+    for _ in range(5):
+        assert (await v.verify(token)).subject == OWNER  # the last keys, served on
+    assert len(attempts) == 1  # one try, not one per request
+    now[0] += 61
+    await v.verify(token)
+    assert len(attempts) == 2
+    p.handler = good_handler
+    now[0] += 61
+    await v.verify(token)
+    assert p.jwks_hits == 2
+
+
+@pytest.mark.parametrize("name", ["exp", "nbf", "iat"])
+async def test_non_finite_times_are_refused(name):
+    p = FakeProvider()
+    with pytest.raises(AuthError) as exc:
+        await verifier(p).verify(p.keys[0].sign(claims(**{name: float("nan")})))
+    assert exc.value.code == "invalid_token"
+    with pytest.raises(AuthError):
+        await verifier(p).verify(p.keys[0].sign(claims(**{name: float("inf")})))
+
+
+@pytest.mark.parametrize("jwks_uri", ["http://id.example.ts.net/.well-known/jwks.json",
+                                      "https://elsewhere.example/.well-known/jwks.json"])
+async def test_keys_only_from_the_issuers_https_origin(jwks_uri):
+    p = FakeProvider()
+    base = p.handler
+
+    def handler(request):
+        if request.url.path == "/.well-known/openid-configuration":
+            return httpx.Response(200, json={"issuer": ISSUER, "jwks_uri": jwks_uri})
+        return base(request)
+
+    p.handler = handler
+    with pytest.raises(AuthError) as exc:
+        await verifier(p).verify(p.keys[0].sign(claims()))
+    assert exc.value.status == 503 and p.jwks_hits == 0

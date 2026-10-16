@@ -101,4 +101,5 @@ class FakeProvider:
         return httpx.Response(404)
 
     def transport(self) -> httpx.MockTransport:
-        return httpx.MockTransport(self.handler)
+        # Late-bound, so a test can swap `handler` (an outage, another discovery).
+        return httpx.MockTransport(lambda request: self.handler(request))

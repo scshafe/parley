@@ -48,7 +48,7 @@ the relay (`forbidden`, `not_through_door`).
 | `GET /api/v1/conversations/{id}/events` | SSE, `turn.updated` events with the turn; resume with `Last-Event-ID` or `?after=` |
 | `GET /api/v1/conversations/{id}/turns/{turn}/audio` | `audio/wav` (24 kHz mono), single `Range`; 409 before `ready`, 410 after retention |
 | `GET /api/v1/conversations/{id}/turns/{turn}/timings.json` | follow-along timings, `parley.timings/v1` |
-| `POST /hooks/voice-lab` | voice-lab's webhook, Standard Webhooks signature, no token; `503 webhook_not_configured` until the secret file is placed |
+| `POST /hooks/voice-lab` | voice-lab's webhook, Standard Webhooks signature, no token; `503 webhook_not_configured` until the secret file is placed; a body over 64 KiB is `413` |
 | `GET /healthz` | no token |
 
 Turn states: `thinking` → `speaking` → `ready`, or `failed` with `error.code`

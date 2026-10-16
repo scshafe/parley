@@ -46,6 +46,7 @@ log = logging.getLogger("parley.api")
 
 _CLIENT_TURN_ID = re.compile(r"^[A-Za-z0-9._:-]{1,100}$")
 MAX_TURN_CHARACTERS = 4000
+MAX_WEBHOOK_BYTES = 64 * 1024  # voice-lab's webhook events are a few hundred bytes
 
 
 def error(status: int, code: str, detail: str = "") -> JSONResponse:
@@ -209,7 +210,16 @@ def build_app(
             # Not configured yet (no secret file): voice-lab retries, and the
             # relay's own polling is the backstop.
             return error(503, "webhook_not_configured")
-        body = await request.body()
+        declared = request.headers.get("content-length")
+        if declared is not None and (not declared.isdigit() or int(declared) > MAX_WEBHOOK_BYTES):
+            return error(413, "body_too_large", f"A webhook body is at most {MAX_WEBHOOK_BYTES} bytes.")
+        chunks, size = [], 0
+        async for chunk in request.stream():
+            size += len(chunk)
+            if size > MAX_WEBHOOK_BYTES:
+                return error(413, "body_too_large", f"A webhook body is at most {MAX_WEBHOOK_BYTES} bytes.")
+            chunks.append(chunk)
+        body = b"".join(chunks)
         try:
             verify_webhook(secret, request.headers, body)
         except WebhookError:

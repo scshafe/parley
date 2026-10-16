@@ -191,3 +191,38 @@ def test_real_mode_refuses_to_start_without_its_identity_settings(tmp_path, miss
 def test_the_p1_token_file_is_dev_only(tmp_path):
     env, _ = real_env(tmp_path, PARLEY_TOKEN_FILE=str(tmp_path / "nope"))
     assert Settings.from_env(env=env).token is None  # ignored (and never read) outside --dev
+
+
+@pytest.mark.parametrize("endpoint", ["http://id.example.ts.net/api/oidc/token",
+                                      "https://elsewhere.example/api/oidc/token"])
+async def test_the_secret_goes_only_to_the_issuers_https_origin(tmp_path, endpoint):
+    fake = FakeProvider()
+    base = fake.handler
+
+    def handler(request):
+        if request.url.path == "/.well-known/openid-configuration":
+            return httpx.Response(200, json={"issuer": ISSUER, "token_endpoint": endpoint})
+        return base(request)
+
+    fake.handler = handler
+    cc, _ = provider_for(fake, tmp_path)
+    with pytest.raises(TokenError) as exc:
+        await cc()
+    assert exc.value.code == "discovery_failed" and fake.token_requests == []
+
+
+async def test_an_oversized_webhook_is_413(tmp_path):
+    env, sec = real_env(tmp_path)
+    (sec / "voicelab-webhook-secret").write_text(TEST_SECRET)
+    r = build(Settings.from_env(env=env))
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=r.app), base_url="http://relay") as c:
+        big = await c.post("/hooks/voice-lab", content=b"x" * (64 * 1024 + 1))
+        assert big.status_code == 413 and big.json()["error"]["code"] == "body_too_large"
+
+        async def chunks():
+            for _ in range(80):
+                yield b"x" * 1024
+
+        streamed = await c.post("/hooks/voice-lab", content=chunks())  # no content-length
+        assert streamed.status_code == 413
+    r.store.close()

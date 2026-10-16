@@ -26,10 +26,12 @@ import binascii
 import hmac
 import json
 import logging
+import math
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 import httpx
 from cryptography.exceptions import InvalidSignature
@@ -178,10 +180,21 @@ def _verify_signature(alg: str, key: Any, signing_input: bytes, signature: bytes
     return True
 
 
+def same_origin_https(url: object, issuer: str) -> bool:
+    """Whether ``url`` is an https URL on the issuer's own origin (scheme, host
+    and port), where the relay may send a client secret or fetch keys."""
+    if not isinstance(url, str):
+        return False
+    u, i = urlsplit(url), urlsplit(issuer)
+    return u.scheme == "https" and i.scheme == "https" and u.netloc.lower() == i.netloc.lower()
+
+
 class JwksSource:
     """An issuer's published keys, fetched from its discovery document's
-    ``jwks_uri`` and kept for ``ttl`` seconds; an unknown key id refetches,
-    at most once every ``min_refetch`` seconds."""
+    ``jwks_uri`` (https, on the issuer's origin) and kept for ``ttl`` seconds;
+    an unknown key id refetches. Fetches happen at most once every
+    ``min_refetch`` seconds, failed ones included: while the provider is down,
+    the last keys are served on and requests do not each wait on a fetch."""
 
     def __init__(self, issuer: str, *, transport: httpx.AsyncBaseTransport | None = None, ttl: float = 3600.0,
                  min_refetch: float = 60.0, clock: Callable[[], float] = time.monotonic) -> None:
@@ -192,6 +205,7 @@ class JwksSource:
         self._clock = clock
         self._keys: dict[str, tuple[str, Any]] = {}
         self._fetched_at: float | None = None
+        self._attempted_at: float | None = None
         self._jwks_uri: str | None = None
         self._lock = asyncio.Lock()
 
@@ -203,7 +217,8 @@ class JwksSource:
             resp = await self._client.get(f"{self.issuer}/.well-known/openid-configuration")
             resp.raise_for_status()
             disco = resp.json()
-            if disco.get("issuer", "").rstrip("/") != self.issuer or not isinstance(disco.get("jwks_uri"), str):
+            if disco.get("issuer", "").rstrip("/") != self.issuer or not same_origin_https(disco.get("jwks_uri"),
+                                                                                          self.issuer):
                 raise ValueError("the discovery document does not match the issuer")
             self._jwks_uri = disco["jwks_uri"]
         resp = await self._client.get(self._jwks_uri)
@@ -216,15 +231,16 @@ class JwksSource:
             now = self._clock()
             stale = self._fetched_at is None or now - self._fetched_at > self._ttl
             unknown = kid is not None and kid not in self._keys
-            may_refetch = self._fetched_at is None or now - self._fetched_at > self._min_refetch
-            if stale or (unknown and may_refetch):
+            may_fetch = self._attempted_at is None or now - self._attempted_at > self._min_refetch
+            if (stale or unknown) and may_fetch:
+                self._attempted_at = now
                 try:
                     await self._fetch()
                 except (httpx.HTTPError, ValueError) as exc:
-                    log.warning("the identity provider's keys could not be fetched: %s", type(exc).__name__)
-                    if not self._keys:
-                        raise AuthError("keys_unavailable", "The identity provider's keys are not available.",
-                                        status=503) from exc
+                    log.warning("the identity provider's keys could not be fetched (%s)%s", type(exc).__name__,
+                                "; serving the last ones" if self._keys else "")
+            if not self._keys:
+                raise AuthError("keys_unavailable", "The identity provider's keys are not available.", status=503)
             if kid is None:
                 return next(iter(self._keys.values())) if len(self._keys) == 1 else None
             return self._keys.get(kid)
@@ -272,8 +288,13 @@ class JwtVerifier:
         auds = {aud} if isinstance(aud, str) else {a for a in aud if isinstance(a, str)} if isinstance(aud, list) else set()
         if not auds & self.audiences:
             raise AuthError("invalid_token", "The bearer token is not for this relay.")
+        for name in ("exp", "nbf", "iat"):  # json.loads accepts NaN and Infinity
+            value = claims.get(name)
+            if value is not None and (not isinstance(value, int | float) or isinstance(value, bool)
+                                      or not math.isfinite(value)):
+                raise AuthError("invalid_token", f"The bearer token's {name} is not a time.")
         exp = claims.get("exp")
-        if not isinstance(exp, int | float) or isinstance(exp, bool):
+        if exp is None:
             raise AuthError("invalid_token", "The bearer token has no expiry.")
         if exp + leeway < now:
             raise AuthError("token_expired", "The bearer token has expired.")

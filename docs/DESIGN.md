@@ -267,12 +267,14 @@ is the reference. The app's P2 work is recorded separately.
   - Its subject, and the door's `X-Forwarded-User`, are the owner (`PARLEY_OWNER_SUBJECT`). oauth2-proxy v7.15.3 sets `X-Forwarded-User` from `sub`.
 - A missing or bad token answers `401`, with `WWW-Authenticate: Bearer`. The codes are `unauthorized`, `invalid_token` and `token_expired`. The app refreshes its token on `token_expired` and signs in again otherwise.
 - A good token for someone else, or a request that went around the door, answers `403` (`forbidden`, `not_through_door`). Keys that cannot be fetched answer `503`.
-- The keys are kept for an hour. An unknown key id refetches them, at most once a minute.
+- The keys are kept for an hour. An unknown key id refetches them. Fetches, failed ones included, happen at most once a minute: while Pocket ID is unreachable, the last keys are served on and requests do not wait on a fetch. `jwks_uri` must be https on the issuer's own origin.
+- `exp`, `nbf` and `iat` must be finite numbers (JSON parsing accepts `NaN` and `Infinity`).
+- Pocket ID's live JWKS (read 2026-10-16) holds one RSA key, 2048 bits, `alg` RS256, and its discovery document lists only RS256. ES256 support is spare.
 - `/healthz` and `/hooks/voice-lab` take no token.
 
 **voice-lab as a caller** (`relay/src/parley_relay/oidc.py`, `voicelab.py`).
 
-- The relay's bearer is a client-credentials token for the confidential client `parley-relay`. It is fetched with `client_secret_basic` from the issuer's discovered token endpoint, and reused until 60 s before `expires_in` (or before the JWT's `exp`). A `401` from voice-lab drops the token and retries once with a fresh one.
+- The relay's bearer is a client-credentials token for the confidential client `parley-relay`. It is fetched with `client_secret_basic` from the issuer's discovered token endpoint, which must be https on the issuer's own origin before the secret is sent, and reused until 60 s before `expires_in` (or before the JWT's `exp`). A `401` from voice-lab drops the token and retries once with a fresh one.
 - A token that cannot be had fails the speech request as `caller_token_unavailable`. It is retried when the provider was unreachable, and not when the client was refused or the secret file is missing.
 - **The refusal body**, checked against voice-lab's source (`ApiRefusal`, `src/cole_voice_lab/api/contracts.py`), not yet against a live API: `{"error": "<code>", "detail": "..."}`. P1's assumption was wrong. The client reads this shape first and still accepts P1's two guesses. The fake now answers this shape. A job's own `error` stays `{"code", "detail"}` (`SpeechFailure`).
 
