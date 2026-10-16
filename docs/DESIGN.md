@@ -309,6 +309,7 @@ is the reference. The app's P2 work is recorded separately.
   - the response's status and where its text is (`output_text`, or the `output_text` parts of `output[].content[]`), and it prints which;
   - that two turns with one `user` (`parley:<conversation>`) share a session;
   - that a wrong password is `agent_refused` and is not retried.
+- The password is held in a wrapper whose repr is `<redacted>`, and the adapter keeps the bearer only inside `httpx.Headers`, whose repr masks it. A failing run, even with `pytest -l`, therefore never prints it (checked with a sentinel). `/dev/stdin` as the token file works only with `pytest -s`.
 - OpenClaw's docs list `status` `incomplete` (a reply cut at the token limit). The adapter reads its text like a completed one.
 - It has been run only against a local stand-in so far. The real run waits for runbook Stage 6 (the endpoint enabled) and Stage 7c (the password file).
 

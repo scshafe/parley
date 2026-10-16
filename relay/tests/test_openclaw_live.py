@@ -5,12 +5,14 @@ Skipped unless both are set:
 
     PARLEY_LIVE_OPENCLAW_URL         e.g. https://openclaw.<tailnet>
     PARLEY_LIVE_OPENCLAW_TOKEN_FILE  a file holding the gateway's password
-                                     (/dev/stdin works: pipe it in)
+                                     (/dev/stdin works, with pytest -s only:
+                                     without -s pytest replaces stdin)
 
 and optionally PARLEY_LIVE_OPENCLAW_AGENT_ID. It sends three short turns to
 the real agent under a fresh session (``parley:live-<random>``), plus one with
-a wrong credential. The password is read once, never printed, and never put in
-an assertion message.
+a wrong credential. The password is read once into a :class:`Secret`, whose
+repr is ``<redacted>``, and is never bound to a test's local name or put in an
+assertion message, so a failure's traceback (even with ``-l``) cannot show it.
 """
 
 from __future__ import annotations
@@ -35,17 +37,50 @@ pytestmark = [
 ]
 
 
+class Secret:
+    """The gateway password: shown as ``<redacted>`` wherever pytest prints a
+    value (fixture arguments, ``-l`` locals, assertion introspection)."""
+
+    __slots__ = ("_value",)
+
+    def __init__(self, value: str) -> None:
+        self._value = value
+
+    def __repr__(self) -> str:
+        return "<redacted>"
+
+    __str__ = __repr__
+
+    def reveal(self) -> str:
+        return self._value
+
+
+class Bearer(httpx.Auth):
+    """Sets the bearer inside httpx (whose Headers repr masks it)."""
+
+    def __init__(self, secret: Secret) -> None:
+        self.secret = secret
+
+    def auth_flow(self, request: httpx.Request):  # type: ignore[no-untyped-def]
+        request.headers["authorization"] = f"Bearer {self.secret.reveal()}"
+        yield request
+
+
+def _read_secret(path: str) -> Secret:
+    with open(path, encoding="utf-8") as fh:
+        return Secret(fh.read().strip())
+
+
 @pytest.fixture(scope="module")
-def password() -> str:
-    with open(TOKEN_FILE, encoding="utf-8") as fh:
-        value = fh.read().strip()
-    assert value, "the token file is empty"
-    return value
+def password() -> Secret:
+    secret = _read_secret(TOKEN_FILE)
+    assert secret.reveal(), "the token file is empty"
+    return secret
 
 
-def adapter(password: str) -> OpenClawAgent:
+def adapter(password: Secret) -> OpenClawAgent:
     async def token() -> str:
-        return password
+        return password.reveal()
 
     return OpenClawAgent(URL, token=token, agent_id=AGENT_ID, timeout=300.0)
 
@@ -57,10 +92,8 @@ async def test_the_response_object_has_the_shape_the_adapter_reads(password):
     body = {"model": f"openclaw/{AGENT_ID}" if AGENT_ID else "openclaw",
             "input": "Reply with the single word: ready.", "instructions": style.instructions(),
             "user": f"parley:live-{secrets.token_hex(4)}", "stream": False}
-    headers = {"authorization": f"Bearer {password}"}
-    if AGENT_ID:
-        headers["x-openclaw-agent-id"] = AGENT_ID
-    async with httpx.AsyncClient(timeout=300.0) as c:
+    headers = {"x-openclaw-agent-id": AGENT_ID} if AGENT_ID else {}
+    async with httpx.AsyncClient(timeout=300.0, auth=Bearer(password)) as c:
         resp = await c.post(f"{URL}/v1/responses", json=body, headers=headers)
     assert resp.status_code == 200, f"HTTP {resp.status_code}"
     data = resp.json()
@@ -90,7 +123,7 @@ async def test_the_adapter_keeps_the_conversation_in_one_session(password):
 
 
 async def test_a_wrong_credential_is_refused_and_not_retried():
-    agent = adapter("not-the-gateway-password")
+    agent = adapter(Secret("not-the-gateway-password"))
     try:
         with pytest.raises(AgentError) as exc:
             await agent.send_turn(AgentConversation(f"live-{secrets.token_hex(4)}"), "hello")
