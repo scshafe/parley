@@ -30,5 +30,9 @@ How a change lands:
 
 The project's agent may merge its own PR and push `main`; there is no approval gate.
 
+Merging deploys to production ([deploy] lane `runner`: `.github/workflows/deploy.yml` verifies on a GitHub-hosted runner, deploys through the host entrypoint on the `parley-prod` self-hosted runner, then checks health).
+Watch the run yourself with `gh run list -w deploy`, `gh run watch <id>` and `gh run view <id> --log` (a public repository's deploy log is a summary only); say in your reply what the run did, naming the merge commit.
+Roll back by merging a `git revert`, or by dispatching `deploy.yml` with `sha=<older commit on main>` and `allow_rollback=true` (`gh workflow run deploy.yml -f sha=<sha> -f allow_rollback=true`).
+
 Central concepts are defined in VOCABULARY.toml; refer to them as `parley:<slug>` (e.g. `parley:turn`), and add a term with `dev vocab add` when you introduce one.
 <!-- scshafe-dev:end landing -->

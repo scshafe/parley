@@ -10,6 +10,17 @@ class = "managed"
 [app]
 kind = "native"
 
+# DEPLOY-01: how this project reaches production (references, never secrets).
+# The relay (relay/) is an app-owned stack on the PC behind the Pocket ID door
+# (docs/DESIGN.md, decision P-Q4); the iOS app is not deployed from here.
+[deploy]
+lane = "runner"
+layout = "app"
+host = "pc"
+tailnet_node = "parley"
+door = "pocket-id"
+verify_on = "hosted"
+
 # BASE-06: the one command that verifies this repository, run from its root
 # by .github/workflows/ci.yml and by hand on the checkout under review. Keep
 # the two equal.

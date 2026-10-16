@@ -1,0 +1,38 @@
+# The stack's data (stack.toml, schema 1). The host's tools/stack reads it as
+# data, never as shell, and rejects an unknown key; `dev check` (DEPLOY-03)
+# checks the same schema. Secrets are named here and never valued: the owner's
+# provisioning places them on the host (`stack env-set parley NAME`; the relay's
+# own secrets are files in state/secrets, see compose.yaml). Infra's
+# stacks/parley/host.conf grants what this file cannot.
+schema = 1
+
+[deploy]
+image = "parley"                     # the image built from this repository's Dockerfile
+pin = "PARLEY_IMAGE"                 # the .env variable stack deploy writes (name:tag)
+pin_style = "ref"
+dockerfile = "Dockerfile"
+containers = ["parley"]              # all must be ready on the candidate
+health = "/healthz"                  # probed through the door at the tailnet name
+ready_attempts = 20
+rollback_services = ["parley"]       # the relay only: never the sidecar (the node identity) or the door
+
+[check]
+required_health_services = ["parley"]
+
+[backup]
+tailscale = true                     # the node identity (always, with a sidecar)
+# The relay's record (SQLite, reply audio, timings), its secret files and the
+# door's client and cookie secrets. state/data and state/secrets belong to the
+# relay's uid; stack-backup reads them through its one-shot read-only container.
+paths = ["state/data", "state/secrets", ".env"]
+
+[env]
+# ID_TAILNET_IP, VOICE_LAB_TAILNET_IP, OPENCLAW_TAILNET_IP: the nodes' tailscale
+# IPv4s (containers resolve public names only). PARLEY_OWNER_SUBJECT: the
+# owner's Pocket ID user id, the relay's one allowed subject.
+required = ["TS_AUTHKEY", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET", "ID_TAILNET_IP", "VOICE_LAB_TAILNET_IP", "OPENCLAW_TAILNET_IP", "PARLEY_OWNER_SUBJECT"]
+generated = ["OAUTH2_PROXY_COOKIE_SECRET"]
+# Optional, placed by the owner when they apply: APNs (after the Apple
+# Developer Program enrollment), the APNs environment (default sandbox) and a
+# dedicated OpenClaw agent id (default: the gateway's default agent).
+owner = ["PARLEY_APNS_KEY_ID", "PARLEY_APNS_TEAM_ID", "PARLEY_APNS_ENV", "PARLEY_OPENCLAW_AGENT_ID"]

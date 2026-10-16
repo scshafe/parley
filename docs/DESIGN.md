@@ -235,6 +235,27 @@ reference.
 
 The xcresult, with its screenshots, and the relay's log are kept as the `ios-test-results` artifact.
 
+## P2 build decisions: the relay
+
+What the P2 build settled for the relay (2026-10-16). Each can change; the code
+is the reference. The app's P2 work is recorded separately.
+
+**Deploy.**
+
+- **The lane.** `dev.toml [deploy]`: the runner lane, app layout, on the PC, node `parley` behind the Pocket ID door, verified on GitHub's hosted runner (the repository is public). `.github/workflows/deploy.yml` is scshafe-dev's, with the same uv setup as `ci.yml`. A merge to `main` deploys once the owner has registered the PC's `parley-prod` runner; until then the deploy job waits for a runner.
+- **The image.** The root `Dockerfile` builds `relay/` with uv 0.12.21 (`uv sync --frozen --no-dev`) on the fleet's pinned `python:3.12-slim`, into `/opt/venv`. It runs as uid:gid `10001:10001`, never root. The healthcheck is the venv's Python (`urllib`), because the image has no curl. `.dockerignore` keeps the iOS app and local state out of the build.
+- **The stack** (`deploy/stack/`). voice-journey's door layout: `ts-parley` (Serve on 443) → `oauth2-proxy` v7.15.3 → the relay, on the subnets `10.253.92.0/29` (door) and `10.253.92.8/29` (upstream), plus `egress`. Every image is pinned by digest, or is the relay's own pinned build.
+  - The door accepts the app's Pocket ID access token as a bearer (an extra JWT issuer whose audience is `parley-ios`) and passes it through unchanged. It sets `X-Forwarded-User` after stripping any copy the caller sent. `/api/` answers `401`, never a login redirect.
+  - `GET /healthz` (the deploy witness) and `POST /hooks/voice-lab` (signature-checked by the relay) pass without a session.
+  - For the event stream: a 100 ms flush interval and a 60 s upstream timeout. The relay ends a stream after 10 minutes, and the app reconnects.
+  - The relay listens on its upstream address and on loopback (`--host 10.253.92.11,127.0.0.1`), never on `egress`. It reaches the id node, voice-lab and the OpenClaw gateway through the host's tailscaled, by `extra_hosts` (`ID_TAILNET_IP`, `VOICE_LAB_TAILNET_IP`, `OPENCLAW_TAILNET_IP`). It reaches APNs by public DNS.
+  - The root is read-only, with a 64 MB `/tmp` tmpfs. `state/data` is mounted read-write at `/data`, and `state/secrets` read-only at `/run/secrets`.
+- **Secret files** (`state/secrets`, each `0600` and owned by `10001`): `openclaw-gateway-token`, `voicelab-client-secret`, `voicelab-webhook-secret` and, optionally, `apns-key.p8`. Every service binds the directory read-only, so the deploy never creates it: the owner makes it (`0700`, owned by `10001`) before the first deploy, or infra's validator refuses the deploy (V-05).
+- **`stack.toml`.** The health path is `/healthz`. A rollback rolls back only the relay. The backup holds `state/data`, `state/secrets` and `.env`. `[env]`:
+  - required: `TS_AUTHKEY`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `ID_TAILNET_IP`, `VOICE_LAB_TAILNET_IP`, `OPENCLAW_TAILNET_IP` and `PARLEY_OWNER_SUBJECT`;
+  - generated: `OAUTH2_PROXY_COOKIE_SECRET`;
+  - owner, optional: `PARLEY_APNS_KEY_ID`, `PARLEY_APNS_TEAM_ID`, `PARLEY_APNS_ENV` and `PARLEY_OPENCLAW_AGENT_ID`.
+
 ## Decisions (owner, 2026-10-15: the recommendations accepted)
 
 | Id | Question | Decision |
