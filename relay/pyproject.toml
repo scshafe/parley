@@ -8,6 +8,7 @@ dependencies = [
     "starlette>=0.47",
     "uvicorn>=0.35",
     "httpx>=0.28",
+    "cryptography>=45",
 ]
 
 [project.scripts]

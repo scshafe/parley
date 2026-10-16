@@ -46,10 +46,16 @@ def _refusal(resp: httpx.Response) -> SpeechError:
     except ValueError:
         body = None
     if isinstance(body, dict):
-        # An ApiRefusal names a stable code; accept it at the top level or under "error".
-        inner = body.get("error") if isinstance(body.get("error"), dict) else body
-        code = str(inner.get("code") or code)
-        detail = str(inner.get("detail") or "")
+        # voice-lab's ApiRefusal is {"error": "<stable code>", "detail": "..."}
+        # (voice-lab src/cole_voice_lab/api/contracts.py). The P1 guesses,
+        # {"code", "detail"} and {"error": {"code", "detail"}}, are read too.
+        err = body.get("error")
+        if isinstance(err, str) and err:
+            code, detail = err, str(body.get("detail") or "")
+        else:
+            inner = err if isinstance(err, dict) else body
+            code = str(inner.get("code") or code)
+            detail = str(inner.get("detail") or "")
     retry_after = None
     if "retry-after" in resp.headers:
         try:
@@ -75,19 +81,32 @@ class SpeechClient:
     async def _headers(self) -> dict[str, str]:
         headers = {"accept": "application/json"}
         if self._token is not None:
-            tok = await self._token()
+            try:
+                tok = await self._token()
+            except Exception as exc:  # a token provider's failure (oidc.TokenError) or a secret file's
+                code = getattr(exc, "code", None) or "caller_token_unavailable"
+                raise SpeechError("caller_token_unavailable", str(code),
+                                  retryable=bool(getattr(exc, "retryable", False))) from exc
             if tok:
                 headers["authorization"] = f"Bearer {tok}"
         return headers
 
     async def _request(self, method: str, path: str, **kw: Any) -> httpx.Response:
-        try:
-            resp = await self._client.request(method, path, headers=await self._headers(), **kw)
-        except httpx.HTTPError as exc:
-            raise SpeechError("network_error", type(exc).__name__, retryable=True) from exc
-        if resp.status_code >= 400:
-            raise _refusal(resp)
-        return resp
+        """One request; a ``401`` with a token provider that can drop its token
+        (client credentials) is retried exactly once with a fresh token."""
+        invalidate = getattr(self._token, "invalidate", None)
+        for attempt in (1, 2):
+            try:
+                resp = await self._client.request(method, path, headers=await self._headers(), **kw)
+            except httpx.HTTPError as exc:
+                raise SpeechError("network_error", type(exc).__name__, retryable=True) from exc
+            if resp.status_code == 401 and attempt == 1 and callable(invalidate):
+                invalidate()
+                continue
+            if resp.status_code >= 400:
+                raise _refusal(resp)
+            return resp
+        raise AssertionError("unreachable")
 
     async def create(self, text: str, *, idempotency_key: str, client_ref: str | None = None,
                      callback_url: str | None = None) -> dict:

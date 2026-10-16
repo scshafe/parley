@@ -109,7 +109,7 @@ async def test_webhook_event_is_signed_and_shaped_like_the_example(client, fake,
 async def test_audio_is_24k_mono_16bit_and_served_with_ranges(client, fake):
     job = (await client.post("/api/v1/speech", json=request_body(), headers=AUTH)).json()
     early = await client.get(f"/api/v1/speech/{job['id']}/audio", headers=AUTH)
-    assert early.status_code == 409 and early.json()["code"] == "audio_not_ready"
+    assert early.status_code == 409 and early.json()["error"] == "audio_not_ready"
     await fake.render(job["id"])
     whole = await client.get(f"/api/v1/speech/{job['id']}/audio", headers=AUTH)
     assert whole.status_code == 200 and whole.headers["content-type"] == "audio/wav"
@@ -131,7 +131,7 @@ async def test_audio_is_24k_mono_16bit_and_served_with_ranges(client, fake):
     assert beyond.status_code == 404
     fake.expire(job["id"])
     gone = await client.get(f"/api/v1/speech/{job['id']}/audio", headers=AUTH)
-    assert gone.status_code == 410 and gone.json()["code"] == "audio_expired"
+    assert gone.status_code == 410 and gone.json()["error"] == "audio_expired"
 
 
 async def test_idempotency_replay_and_conflict(client):
@@ -139,7 +139,7 @@ async def test_idempotency_replay_and_conflict(client):
     b = await client.post("/api/v1/speech", json=request_body(), headers=AUTH)
     assert a.status_code == 202 and b.status_code == 200 and a.json()["id"] == b.json()["id"]
     c = await client.post("/api/v1/speech", json=request_body(text="Something else entirely here."), headers=AUTH)
-    assert c.status_code == 409 and c.json()["code"] == "idempotency_conflict"
+    assert c.status_code == 409 and c.json()["error"] == "idempotency_conflict"
 
 
 @pytest.mark.parametrize(
@@ -164,7 +164,7 @@ async def test_idempotency_replay_and_conflict(client):
 async def test_refusals(client, over, status, code):
     r = await client.post("/api/v1/speech", json=request_body(**over), headers=AUTH)
     assert r.status_code == status, r.text
-    assert r.json()["code"] == code
+    assert r.json()["error"] == code
     assert r.headers["cache-control"] == "no-store"
 
 
@@ -178,17 +178,17 @@ async def test_callback_may_extend_the_prefix_by_whole_segments(client):
 
 async def test_auth_limits_and_routing(client, fake):
     assert (await client.post("/api/v1/speech", json=request_body())).status_code == 401
-    assert (await client.get("/api/v1/speech/sp-nope", headers=AUTH)).json()["code"] == "speech_not_found"
+    assert (await client.get("/api/v1/speech/sp-nope", headers=AUTH)).json()["error"] == "speech_not_found"
     assert (await client.get("/api/v1/speech/sp-nope/x/y/z", headers=AUTH)).status_code == 404
     assert (await client.delete("/api/v1/speech", headers=AUTH)).status_code == 405
     fake.gpu_busy_seconds = 600
     busy = await client.post("/api/v1/speech", json=request_body(idempotency_key="busy"), headers=AUTH)
-    assert busy.status_code == 503 and busy.json()["code"] == "gpu_busy" and busy.headers["retry-after"] == "600"
+    assert busy.status_code == 503 and busy.json()["error"] == "gpu_busy" and busy.headers["retry-after"] == "600"
     fake.gpu_busy_seconds = None
     for i in range(4):
         assert (await client.post("/api/v1/speech", json=request_body(idempotency_key=f"q{i}"), headers=AUTH)).status_code == 202
     full = await client.post("/api/v1/speech", json=request_body(idempotency_key="q5"), headers=AUTH)
-    assert full.status_code == 429 and full.json()["code"] == "too_many_jobs"
+    assert full.status_code == 429 and full.json()["error"] == "too_many_jobs"
 
 
 async def test_cancel_and_failure(client, fake):
@@ -196,7 +196,7 @@ async def test_cancel_and_failure(client, fake):
     r = await client.post(f"/api/v1/speech/{job['id']}/cancel", headers=AUTH)
     assert r.status_code == 202 and r.json()["state"] == "cancelled"
     again = await client.post(f"/api/v1/speech/{job['id']}/cancel", headers=AUTH)
-    assert again.status_code == 409 and again.json()["code"] == "already_finished"
+    assert again.status_code == 409 and again.json()["error"] == "already_finished"
     fake.fail_next = "render_failed"
     job2 = (await client.post("/api/v1/speech", json=request_body(idempotency_key="f1"), headers=AUTH)).json()
     await fake.render(job2["id"])
