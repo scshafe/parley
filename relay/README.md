@@ -48,6 +48,9 @@ the relay (`forbidden`, `not_through_door`).
 | `GET /api/v1/conversations/{id}/events` | SSE, `turn.updated` events with the turn; resume with `Last-Event-ID` or `?after=` |
 | `GET /api/v1/conversations/{id}/turns/{turn}/audio` | `audio/wav` (24 kHz mono), single `Range`; 409 before `ready`, 410 after retention |
 | `GET /api/v1/conversations/{id}/turns/{turn}/timings.json` | follow-along timings, `parley.timings/v1` |
+| `POST /api/v1/devices` `{token, environment}` | register the phone for push: `token` is the APNs device token in hex, `environment` `sandbox` (or `development`, an Xcode debug build) or `production` (default `PARLEY_APNS_ENV`). 201 the device, 200 when that token was registered already (its environment updated); the answer is `{id, environment, created_at, updated_at, last_push_at, push}` and never holds the token |
+| `GET /api/v1/devices` | `{devices, push}`: `push` is whether the relay can send pushes now (false without an APNs key: the app follows its event stream) |
+| `DELETE /api/v1/devices/{id}` | 204; 404 for an unknown id |
 | `POST /hooks/voice-lab` | voice-lab's webhook, Standard Webhooks signature, no token; `503 webhook_not_configured` until the secret file is placed; a body over 64 KiB is `413` |
 | `GET /healthz` | no token |
 
@@ -82,6 +85,10 @@ its secret files are in `/run/secrets`.
 | `PARLEY_VOICELAB_TOKEN_FILE` | instead of the two above, a static bearer (testing by hand) |
 | `PARLEY_WEBHOOK_SECRET_FILE` | voice-lab's `whsec_` webhook secret: `/run/secrets/voicelab-webhook-secret` |
 | `PARLEY_PUBLIC_URL` | the relay's own URL, for the callback (`https://parley.colobus-stargazer.ts.net`); with the webhook secret file set, every speech request carries `callback_url` |
+| `PARLEY_APNS_KEY_FILE` | the APNs auth key (`.p8`): `/run/secrets/apns-key.p8`. Optional: push is off until it and the two ids are set |
+| `PARLEY_APNS_KEY_ID`, `PARLEY_APNS_TEAM_ID` | the key's id and the Apple Developer team id (not secret) |
+| `PARLEY_APNS_TOPIC` | the app's bundle id (default `com.scshafe.parley`) |
+| `PARLEY_APNS_ENV` | `sandbox` (default; `development` is the same) or `production`, for a device that registers without an environment |
 | `PARLEY_POLL_INTERVAL` | seconds between status polls, the webhook's backstop (default 15) |
 | `PARLEY_MAX_SENTENCE_CHARS` | the voice release's one-pass sentence limit, if known |
 

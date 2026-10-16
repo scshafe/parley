@@ -13,6 +13,9 @@ App routes (``Authorization: Bearer``; who may use them is the
   resumable with ``Last-Event-ID`` or ``?after=``
 - ``GET  /api/v1/conversations/{id}/turns/{turn}/audio`` → WAV, single ``Range``
 - ``GET  /api/v1/conversations/{id}/turns/{turn}/timings.json``
+- ``POST /api/v1/devices`` ``{token, environment}`` → 201 device (200 when the
+  token was registered already); ``GET /api/v1/devices`` → ``{devices, push}``;
+  ``DELETE /api/v1/devices/{id}`` → 204. The APNs token is never returned.
 
 Webhook (Standard Webhooks signature, no bearer): ``POST /hooks/voice-lab``.
 Unauthenticated: ``GET /healthz``.
@@ -45,6 +48,10 @@ WebhookSecretSource = Callable[[], "WebhookSecret | None"]
 log = logging.getLogger("parley.api")
 
 _CLIENT_TURN_ID = re.compile(r"^[A-Za-z0-9._:-]{1,100}$")
+_DEVICE_TOKEN = re.compile(r"[0-9a-fA-F]{32,200}")  # fullmatch: no trailing newline
+# The app's aps-environment entitlement says development or production; APNs
+# calls the development host the sandbox.
+_ENVIRONMENTS = {"sandbox": "sandbox", "development": "sandbox", "production": "production"}
 MAX_TURN_CHARACTERS = 4000
 MAX_WEBHOOK_BYTES = 64 * 1024  # voice-lab's webhook events are a few hundred bytes
 
@@ -65,6 +72,7 @@ def build_app(
     token: str | None = None,
     auth: Authenticator | None = None,
     webhook_secret: WebhookSecret | WebhookSecretSource | None = None,
+    default_environment: str = "sandbox",
     stream_heartbeat: float = 15.0,
     stream_max_seconds: float = 600.0,
     on_startup: Callable[[], object] | None = None,
@@ -198,6 +206,35 @@ def build_app(
             headers={"cache-control": "no-store", "x-accel-buffering": "no"},
         )
 
+    def device_json(d: dict) -> dict:
+        return {"id": d["id"], "environment": d["environment"], "created_at": d["created_at"],
+                "updated_at": d["updated_at"], "last_push_at": d["last_push_at"]}
+
+    def push_enabled() -> bool:
+        return bool(getattr(pipeline.push, "enabled", False))
+
+    async def register_device(request: Request) -> Response:
+        body = await json_body(request)
+        if body is None:
+            return error(422, "invalid_request", "The body is not a JSON object.")
+        token, env = body.get("token"), body.get("environment", default_environment)
+        if not isinstance(token, str) or not _DEVICE_TOKEN.fullmatch(token):
+            return error(422, "invalid_request", "token is the APNs device token in hex.")
+        if not isinstance(env, str) or env not in _ENVIRONMENTS:
+            return error(422, "invalid_request", "environment is sandbox (development) or production.")
+        device, created = store.register_device(token.lower(), _ENVIRONMENTS[env])
+        log.info("device %s %s (%s)", device["id"], "registered" if created else "re-registered", device["environment"])
+        return ok({**device_json(device), "push": push_enabled()}, 201 if created else 200)
+
+    async def list_devices(request: Request) -> Response:
+        return ok({"devices": [device_json(d) for d in store.devices()], "push": push_enabled()})
+
+    async def delete_device(request: Request) -> Response:
+        if not store.delete_device(request.path_params["did"]):
+            return error(404, "device_not_found")
+        log.info("device %s removed", request.path_params["did"])
+        return Response(status_code=204, headers={"cache-control": "no-store"})
+
     async def voice_lab_webhook(request: Request) -> Response:
         if secret_source is None:
             return error(404, "not_found")
@@ -267,6 +304,9 @@ def build_app(
         Route("/api/v1/conversations/{cid}/turns/{tid}", guard(get_turn), methods=["GET"]),
         Route("/api/v1/conversations/{cid}/turns/{tid}/audio", guard(turn_audio), methods=["GET", "HEAD"]),
         Route("/api/v1/conversations/{cid}/turns/{tid}/timings.json", guard(turn_timings), methods=["GET"]),
+        Route("/api/v1/devices", guard(register_device), methods=["POST"]),
+        Route("/api/v1/devices", guard(list_devices), methods=["GET"]),
+        Route("/api/v1/devices/{did}", guard(delete_device), methods=["DELETE"]),
         Route("/hooks/voice-lab", voice_lab_webhook, methods=["POST"]),
     ]
     return Starlette(routes=routes, lifespan=lifespan)

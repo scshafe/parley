@@ -156,7 +156,10 @@ class Pipeline:
             if turn is not None and turn["state"] == "speaking":
                 turn = await self._speak(turn)
             if turn is not None and turn["state"] == "ready" and not turn["pushed"]:
-                await self.push.reply_ready(turn["conversation_id"], turn["id"])
+                try:
+                    await self.push.reply_ready(turn["conversation_id"], turn["id"])
+                except Exception:  # noqa: BLE001 - a push never fails a ready turn
+                    log.exception("turn %s: push failed", turn_id)
                 self.store.update_turn(turn_id, pushed=1)
         except asyncio.CancelledError:
             raise

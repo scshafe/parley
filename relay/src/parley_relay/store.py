@@ -60,6 +60,15 @@ CREATE TABLE IF NOT EXISTS events (
     data_json TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS devices (
+    id TEXT PRIMARY KEY,
+    token TEXT NOT NULL UNIQUE,
+    environment TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_push_at TEXT,
+    last_push_status INTEGER
+);
 CREATE INDEX IF NOT EXISTS events_by_conversation ON events (conversation_id, id);
 CREATE INDEX IF NOT EXISTS turns_by_state ON turns (state);
 """
@@ -264,6 +273,39 @@ class Store:
                 "SELECT * FROM turns WHERE state = 'ready' AND audio_deleted = 0 AND ready_at < ?", (cutoff,)
             ).fetchall()
         return [dict(r) for r in rows]
+
+    # --- devices (APNs) -----------------------------------------------------------------------
+    # A device token is a credential for pushing to that phone: it is stored, sent
+    # to Apple, and never logged or returned by the API.
+
+    def register_device(self, token: str, environment: str) -> tuple[dict, bool]:
+        """Add a device, or update the environment of the one with this token
+        (``created`` is False)."""
+        ts = now_iso()
+        with self._tx() as db:
+            row = db.execute("SELECT * FROM devices WHERE token = ?", (token,)).fetchone()
+            if row is not None:
+                db.execute("UPDATE devices SET environment = ?, updated_at = ? WHERE id = ?", (environment, ts, row["id"]))
+                did, created = row["id"], False
+            else:
+                did, created = new_id("d"), True
+                db.execute("INSERT INTO devices (id, token, environment, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                           (did, token, environment, ts, ts))
+            row = db.execute("SELECT * FROM devices WHERE id = ?", (did,)).fetchone()
+        return dict(row), created
+
+    def devices(self) -> list[dict]:
+        with self._lock:
+            rows = self._db.execute("SELECT * FROM devices ORDER BY created_at, id").fetchall()
+        return [dict(r) for r in rows]
+
+    def delete_device(self, did: str) -> bool:
+        with self._tx() as db:
+            return db.execute("DELETE FROM devices WHERE id = ?", (did,)).rowcount > 0
+
+    def record_push(self, did: str, status: int) -> None:
+        with self._tx() as db:
+            db.execute("UPDATE devices SET last_push_at = ?, last_push_status = ? WHERE id = ?", (now_iso(), status, did))
 
     # --- events -----------------------------------------------------------------------------
 

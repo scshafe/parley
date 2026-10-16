@@ -18,7 +18,7 @@ from .auth import DoorAuth, JwksSource, JwtVerifier
 from .fake_voicelab import FakeVoiceLab
 from .oidc import ClientCredentials
 from .pipeline import Pipeline, PipelineSettings
-from .push import NoopPushSender, RecordingPushSender
+from .push import APNsSender, RecordingPushSender
 from .secretfiles import SecretFile, SecretFileError
 from .store import Store
 from .voicelab import SpeechClient, TokenProvider, WebhookSecret
@@ -73,6 +73,12 @@ class Settings:
     voicelab_token_file: str | None = None  # a static bearer instead (testing by hand)
     webhook_secret_file: str | None = None
     public_url: str | None = None  # the relay's tailnet URL, for voice-lab's callback
+    # APNs (optional): off unless the key id, the team id and the key file are set.
+    apns_key_file: str | None = None
+    apns_key_id: str | None = None
+    apns_team_id: str | None = None
+    apns_topic: str = "com.scshafe.parley"
+    apns_env: str = "sandbox"  # for a device that registers without an environment
     poll_interval: float = 15.0
     max_sentence_chars: int | None = None
     fake_agent_delay: float = 1.0
@@ -106,6 +112,11 @@ class Settings:
             voicelab_token_file=e.get("PARLEY_VOICELAB_TOKEN_FILE") or None,
             webhook_secret_file=e.get("PARLEY_WEBHOOK_SECRET_FILE") or None,
             public_url=e.get("PARLEY_PUBLIC_URL") or None,
+            apns_key_file=e.get("PARLEY_APNS_KEY_FILE") or None,
+            apns_key_id=e.get("PARLEY_APNS_KEY_ID") or None,
+            apns_team_id=e.get("PARLEY_APNS_TEAM_ID") or None,
+            apns_topic=e.get("PARLEY_APNS_TOPIC") or "com.scshafe.parley",
+            apns_env=e.get("PARLEY_APNS_ENV") or "sandbox",
             poll_interval=float(e.get("PARLEY_POLL_INTERVAL", "1.0" if dev else "15")),
             max_sentence_chars=int(msc) if msc else None,
         )
@@ -228,8 +239,14 @@ def _build_real(s: Settings) -> Relay:
     agent: AgentAdapter = FakeAgent() if s.agent == "fake" else _openclaw(s)
     if isinstance(agent, OpenClawAgent):
         closers.append(agent.aclose)
-    push = NoopPushSender()
+    if s.apns_env == "development":  # the entitlement's word for the sandbox, as the API accepts it
+        s.apns_env = "sandbox"
+    if s.apns_env not in ("sandbox", "production"):
+        raise ConfigError("PARLEY_APNS_ENV is sandbox (or development) or production")
     store = Store(s.data_dir)
+    push = APNsSender(store, key_file=s.apns_key_file, key_id=s.apns_key_id, team_id=s.apns_team_id,
+                      topic=s.apns_topic)
+    closers.append(push.aclose)
     pipeline = Pipeline(store, agent, speech, push, PipelineSettings(
         callback_url=callback, poll_interval=s.poll_interval, max_sentence_chars=s.max_sentence_chars))
 
@@ -238,10 +255,10 @@ def _build_real(s: Settings) -> Relay:
             await close()
 
     app = build_app(store=store, pipeline=pipeline, auth=auth, webhook_secret=webhook.get if webhook else None,
-                    on_shutdown=shutdown)
+                    default_environment=s.apns_env, on_shutdown=shutdown)
     agent_note = ("fake" if s.agent == "fake"
                   else f"openclaw ({_file_state(s.openclaw_token_file)}{', agent ' + s.openclaw_agent_id if s.openclaw_agent_id else ''})")
     webhook_note = f"on ({_file_state(s.webhook_secret_file)})" if callback else "off (polling only)"
-    log.info("parley-relay: app auth: %s; agent: %s; speech: %s; webhook: %s; push: off",
-             auth.describe(), agent_note, speech_note, webhook_note)
+    log.info("parley-relay: app auth: %s; agent: %s; speech: %s; webhook: %s; push: %s",
+             auth.describe(), agent_note, speech_note, webhook_note, push.describe())
     return Relay(app, store, pipeline, push, None, agent)
