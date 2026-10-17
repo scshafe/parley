@@ -32,7 +32,7 @@ from .push import PushSender
 from .sentences import split_for_jobs
 from .spoken import clean_reply
 from .store import Store, now_iso
-from .timings import estimate, job_sentences
+from .timings import job_sentences, measure
 from .views import turn_json
 from .voicelab import TERMINAL_STATES, SpeechClient, SpeechError
 
@@ -288,7 +288,7 @@ class Pipeline:
             sentences.extend(timed)
             offset += job_dur
         joined = audio.join(parts)
-        timings = estimate(text, sentences)
+        timings = measure(text, sentences, audio.levels(joined))
         timings["duration_ms"] = audio.info(joined).duration_ms
         timings["turn_id"] = tid
         timings["exact_sentences"] = exact

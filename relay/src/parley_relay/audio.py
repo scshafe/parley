@@ -3,9 +3,12 @@ synthetic audio the fake voice-lab serves (tones and silence, never speech)."""
 
 from __future__ import annotations
 
+import array
 import io
 import math
+import operator
 import struct
+import sys
 import wave
 from dataclasses import dataclass
 
@@ -33,6 +36,26 @@ def _pcm(data: bytes) -> tuple[WavInfo, bytes]:
     with wave.open(io.BytesIO(data), "rb") as w:
         meta = WavInfo(w.getframerate(), w.getnchannels(), w.getsampwidth(), w.getnframes())
         return meta, w.readframes(meta.frames)
+
+
+def levels(data: bytes, frame_ms: int = 10) -> list[float]:
+    """The loudness of each ``frame_ms`` frame of a WAV, in dB below full scale
+    (silence is about -120). Only voice-lab's format, mono 16-bit, is measured:
+    anything else gives ``[]``."""
+    meta, pcm = _pcm(data)
+    if meta.channels != 1 or meta.sample_width != 2 or not meta.rate:
+        return []
+    samples = array.array("h")
+    samples.frombytes(pcm)
+    if sys.byteorder == "big":
+        samples.byteswap()  # WAV PCM is little-endian
+    n = max(1, meta.rate * frame_ms // 1000)
+    full = 32768.0 * 32768.0
+    out: list[float] = []
+    for i in range(0, len(samples) - n + 1, n):
+        frame = samples[i : i + n]
+        out.append(10 * math.log10(sum(map(operator.mul, frame, frame)) / n / full + 1e-12))
+    return out
 
 
 def encode(pcm: bytes, rate: int = RATE, channels: int = 1, sample_width: int = 2) -> bytes:

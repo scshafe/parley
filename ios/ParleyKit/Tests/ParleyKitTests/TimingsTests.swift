@@ -108,6 +108,22 @@ final class HighlightCursorTests: XCTestCase {
         XCTAssertEqual(last, 6)
     }
 
+    func testHeardTimeAllowsForOutputLatency() {
+        // AirPods: 200 ms of latency puts the ear 200 ms behind the player; at
+        // 1.5x, 300 ms of audio passes in those 200 ms.
+        XCTAssertEqual(HighlightCursor.latencyMs(outputLatency: 0.2, rate: 1), 200)
+        XCTAssertEqual(HighlightCursor.latencyMs(outputLatency: 0.2, rate: 1.5), 300)
+        XCTAssertEqual(HighlightCursor.heardMs(playerMs: 1800, latencyMs: 200), 1600)
+        XCTAssertEqual(HighlightCursor.heardMs(playerMs: 100, latencyMs: 200), 0)
+        // So "The" (1560 ms) is still unlit at a player time of 1700 over Bluetooth.
+        XCTAssertEqual(cursor.position(at: HighlightCursor.heardMs(playerMs: 1700, latencyMs: 200)).word, 2)
+        // After a seek to "The", it lights at once, and the clock takes over
+        // once the sound has caught up.
+        XCTAssertEqual(HighlightCursor.heardMs(playerMs: 1560, latencyMs: 200, floorMs: 1560), 1560)
+        XCTAssertEqual(HighlightCursor.heardMs(playerMs: 2100, latencyMs: 200, floorMs: 1560), 1900)
+        XCTAssertEqual(HighlightCursor.heardMs(playerMs: 1800, latencyMs: 0, floorMs: 1560), 1800)
+    }
+
     func testSeekAndHitTesting() {
         XCTAssertEqual(cursor.seekTime(forWord: 3), 1560)
         XCTAssertNil(cursor.seekTime(forWord: 99))
