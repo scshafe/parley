@@ -21,6 +21,15 @@ def test_splits_after_marks_followed_by_space_or_end():
     ]
 
 
+def test_a_short_last_fragment_joins_the_sentence_before_it():
+    # voice-lab's split_sentences: the carry left at the end is appended to the
+    # last sentence; a reply ending "Done." must match it, or every segment's
+    # text is lost and the reply's words are spread over the whole job.
+    text = "That is exactly what I meant to say. Thanks."
+    assert texts(text, voice_lab_sentences(text)) == [text]
+    assert texts("Done.", voice_lab_sentences("Done.")) == ["Done."]
+
+
 def test_mark_not_followed_by_space_does_not_split():
     text = "Version 3.12 is out now, and it is fast. The site example.com has it."
     assert texts(text, voice_lab_sentences(text)) == [
@@ -46,11 +55,6 @@ def test_line_breaks_split_and_blank_lines_vanish():
 def test_short_fragments_join_the_next_sentence():
     text = "Yes. Ok. That is exactly what I meant to say."
     assert texts(text, voice_lab_sentences(text)) == ["Yes. Ok. That is exactly what I meant to say."]
-
-
-def test_short_fragment_at_the_end_stands_alone():
-    text = "That is exactly what I meant to say. Thanks."
-    assert texts(text, voice_lab_sentences(text)) == ["That is exactly what I meant to say.", "Thanks."]
 
 
 def test_long_sentence_split_at_last_soft_break_within_limit():

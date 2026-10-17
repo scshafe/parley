@@ -222,4 +222,6 @@ async def test_sentences_follow_the_documented_rule(client, fake):
     job = (await client.post("/api/v1/speech", json=request_body(text=text, idempotency_key="s"), headers=AUTH)).json()
     await fake.render(job["id"])
     # "Hi. Ok." are fragments under 12 characters: they join the next sentence.
-    assert fake.jobs[job["id"]].segment_count == 2
+    # "Short end." has no next sentence: it joins the one before (voice-lab's
+    # split_sentences), so the whole text is one segment.
+    assert fake.jobs[job["id"]].segment_count == 1

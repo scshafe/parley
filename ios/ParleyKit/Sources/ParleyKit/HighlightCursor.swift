@@ -62,6 +62,22 @@ public struct HighlightCursor: Sendable {
         return nil
     }
 
+    /// How far behind the player the listener is: sound leaving the player
+    /// reaches the ear `outputLatency` seconds later (a few milliseconds on the
+    /// speaker, about 0.15–0.25 s over Bluetooth), and `rate` times that much
+    /// audio passes meanwhile.
+    public static func latencyMs(outputLatency: TimeInterval, rate: Float) -> Int {
+        max(0, Int((outputLatency * Double(rate) * 1000).rounded()))
+    }
+
+    /// Where the listener is when the player is at `playerMs`, `latencyMs`
+    /// behind it, so the highlight follows what is heard rather than what was
+    /// just played. Never before `floorMs`, the last seek: a tapped word lights
+    /// at once instead of the word before it lingering until the sound arrives.
+    public static func heardMs(playerMs: Int, latencyMs: Int, floorMs: Int = 0) -> Int {
+        min(playerMs, max(0, floorMs, playerMs - latencyMs))
+    }
+
     /// Where a tap on a word seeks to: its start.
     public func seekTime(forWord index: Int) -> Int? {
         timings.words.first { $0.index == index }?.startMs

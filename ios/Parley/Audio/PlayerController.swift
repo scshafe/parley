@@ -6,7 +6,8 @@ import QuartzCore
 import UIKit
 
 /// Plays one reply at a time and drives the follow-along highlight from the
-/// audio clock (`AVAudioPlayer.currentTime`, sampled on a display link).
+/// audio clock (`AVAudioPlayer.currentTime`, sampled on a display link, less
+/// the route's output latency while playing).
 /// Background audio and lock-screen controls go through AVAudioSession,
 /// MPNowPlayingInfoCenter and MPRemoteCommandCenter.
 @Observable
@@ -28,6 +29,9 @@ final class PlayerController {
     @ObservationIgnored private var finishDelegate: FinishDelegate?
     @ObservationIgnored private var title = "Parley"
     @ObservationIgnored private var commandsInstalled = false
+    /// The output latency the highlight allows for, and the last seek's time.
+    @ObservationIgnored private var latencyMs = 0
+    @ObservationIgnored private var seekFloorMs = 0
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
 
     init() {
@@ -61,6 +65,7 @@ final class PlayerController {
         self.turnID = turnID
         self.title = title
         cursor = timings.map { HighlightCursor(timings: $0) }
+        seekFloorMs = 0
         currentMs = 0
         position = cursor?.position(at: 0) ?? .init(word: nil, sentence: nil)
         send(.load)
@@ -145,6 +150,7 @@ final class PlayerController {
                 tick()
             case .seekPlayer(let ms):
                 player?.currentTime = Double(ms) / 1000
+                seekFloorMs = ms
                 tick()
             case .updateNowPlaying:
                 updateNowPlaying()
@@ -174,7 +180,15 @@ final class PlayerController {
         guard let player else { return }
         currentMs = Int((player.currentTime * 1000).rounded())
         if let cursor {
-            let p = cursor.position(at: currentMs)
+            if machine.state == .playing {
+                // Measured while playing and kept while paused, so pausing
+                // leaves the highlight where the sound stopped.
+                let session = AVAudioSession.sharedInstance()
+                latencyMs = HighlightCursor.latencyMs(outputLatency: session.outputLatency + session.ioBufferDuration,
+                                                      rate: rate)
+            }
+            let heard = HighlightCursor.heardMs(playerMs: currentMs, latencyMs: latencyMs, floorMs: seekFloorMs)
+            let p = cursor.position(at: heard)
             if p != position { position = p }
         }
     }

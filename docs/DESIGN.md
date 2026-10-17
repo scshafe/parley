@@ -97,9 +97,10 @@ text today. Two ways to get it:
 - **Recommended: a small voice-lab change.** Add each segment's character range (`text_start` and `text_end`) to its status and its `segment.ready` event. voice-lab's job runner already splits the text, so it knows these ranges.
 - **Fallback:** the relay repeats voice-lab's documented splitting rule. This works, but it breaks silently if voice-lab ever changes the rule.
 
-**Word level, in two steps.**
+**Word level, in steps.**
 
-- **P1, estimated.** Within each sentence, a word's time is proportional to its share of the sentence, weighted by syllables, with pauses added for punctuation. This is good enough to follow along, and costs nothing.
+- **P1, estimated.** Within each sentence, a word's time is proportional to its share of the sentence, weighted by syllables, with pauses added for punctuation. This costs nothing, but live F5 segments open with 0.9–1.9 s of silence and end on their last word, so the highlight ran about a second ahead (measured 2026-10-17 on three live replies against a CTC alignment: mean error 572–1,057 ms).
+- **P2, measured (current).** The relay reads the reply's loudness in 10 ms frames and places each sentence's words in the speech it hears. It chooses which silences are the pauses between words: long ones always are, and they go at punctuation wherever possible. Same three replies: mean error 84–120 ms, worst word 364 ms, under 40 ms of CPU. `"source": "measured"`; with no usable audio it falls back to P1. The app also allows for the audio route's output latency (about 0.2 s on AirPods).
 - **P3, aligned.** Forced alignment of each segment's audio against its known text, in the relay on CPU. A CTC aligner, for example torchaudio's MMS forced aligner, places each word to within tens of milliseconds. The text is known, so this is alignment, not recognition, and it does not mishear words. The result has the same format as P1, so the app does not change.
 
 `timings.json` holds an entry for each word, with its character range in the

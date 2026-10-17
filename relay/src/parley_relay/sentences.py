@@ -7,8 +7,8 @@ then the relay repeats voice-lab's documented splitting rule (SPEECH_API.md
 
     The job runner splits the text into sentences (after ``.``, ``!``, ``?``,
     ``…`` and their CJK forms followed by a space or the end, and at line
-    breaks); a fragment under 12 characters joins the next sentence, and a
-    sentence too long for one pass of the release's model is split at its last
+    breaks); a fragment under 12 characters joins the next sentence (the last
+    one joins the sentence before it), and a sentence too long for one pass of the release's model is split at its last
     comma, semicolon or colon within the limit, else at a space.
 
 Everything that depends on the rule goes through :func:`segment_ranges`, so the
@@ -116,9 +116,12 @@ def voice_lab_sentences(text: str, *, max_sentence_chars: int | None = None) -> 
             continue
         joined.append(span)
     if pending is not None:
-        # A short fragment at the very end has no next sentence to join; it is
-        # rendered on its own.
-        joined.append(pending)
+        # A short fragment at the very end has no next sentence to join: it joins
+        # the one before it ("…tonight? Done." is one segment), or is the only one.
+        if joined:
+            joined[-1] = Span(joined[-1].start, pending.end)
+        else:
+            joined.append(pending)
     if not max_sentence_chars:
         return joined
     out: list[Span] = []
