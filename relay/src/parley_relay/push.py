@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -25,6 +26,23 @@ from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 from .secretfiles import SecretFile, SecretFileError
 
 log = logging.getLogger("parley.push")
+
+
+class _DeviceTokenRedaction(logging.Filter):
+    """httpx logs each request's URL at INFO, and an APNs URL ends in the
+    device token. The relay's own lines name a device by its id; this keeps the
+    token out of httpx's line too."""
+
+    _token = re.compile(r"(/3/device/)[^\s\"']+")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        if "/3/device/" in message:
+            record.msg, record.args = self._token.sub(r"\1<device token>", message), ()
+        return True
+
+
+logging.getLogger("httpx").addFilter(_DeviceTokenRedaction())
 
 REPLY_READY_ALERT = "Reply ready"
 
