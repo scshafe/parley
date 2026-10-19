@@ -441,6 +441,10 @@ class FakeVoiceLab:
                 yield f"id: end\nevent: speech.{job.state}\ndata: {json.dumps(self.status_body(job))}\n\n"
                 return
             try:
+                # An Event that is already set returns at once without yielding;
+                # looping on it would never let the loop run and its timers
+                # pile up without bound. Yield first, and wait on a fresh event.
+                await asyncio.sleep(0)
                 await asyncio.wait_for(job.changed.wait(), heartbeat)
             except TimeoutError:
                 yield ": keep-alive\n\n"
