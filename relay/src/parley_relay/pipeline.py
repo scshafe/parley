@@ -23,6 +23,7 @@ import contextlib
 import json
 import logging
 import os
+import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -80,6 +81,7 @@ class Pipeline:
         self.bus = bus or EventBus()
         self._sleep = sleep
         self._tasks: dict[str, asyncio.Task] = {}
+        self._streams: dict[str, asyncio.Task] = {}
         self._wake: dict[str, asyncio.Event] = {}
         self._conversation_locks: dict[str, asyncio.Lock] = {}
         self._sweeper: asyncio.Task | None = None
@@ -161,10 +163,13 @@ class Pipeline:
                 except Exception:  # noqa: BLE001 - a push never fails a ready turn
                     log.exception("turn %s: push failed", turn_id)
                 self.store.update_turn(turn_id, pushed=1)
+            await self._drain_stream(turn_id)
         except asyncio.CancelledError:
+            self._cancel_stream(turn_id)
             raise
         except Exception:  # noqa: BLE001 - one turn's bug must not stop the runner
             log.exception("turn %s: internal error", turn_id)
+            self._cancel_stream(turn_id)
             self._fail(turn_id, "internal_error", "The relay hit an internal error.")
 
     async def _think(self, turn: dict) -> dict | None:
@@ -228,6 +233,10 @@ class Pipeline:
                 job["job_id"], job["state"] = st["id"], st["state"]
                 self.store.record_job(st["id"], tid, job["index"])
                 self.store.update_turn(tid, jobs_json=json.dumps(jobs))
+
+            if tid not in self._streams:
+                self._streams[tid] = asyncio.get_running_loop().create_task(
+                    self._stream_segments(tid, jobs), name=f"segments-{tid}")
 
             statuses: dict[int, dict] = {}
             loop = asyncio.get_running_loop()
@@ -308,6 +317,63 @@ class Pipeline:
         self._publish(turn)
         return turn
 
+    # --- streamed segments ----------------------------------------------------------------------
+
+    async def _stream_segments(self, tid: str, jobs: list[dict]) -> None:
+        """Follow each speech job's event stream, in order, and keep each finished
+        sentence's audio (``segments/<n>.wav``, numbered across jobs) so the app
+        can play from the first sentence while the rest is rendered. The turn's
+        ``segments`` list grows and each addition is published. Best effort: a
+        failure here (a refused stream, a network error) only means the app waits
+        for the whole reply, as before."""
+        folder = self.store.turn_dir(tid) / "segments"
+        segments: list[dict] = []
+        offset = 0
+        try:
+            for job in jobs:
+                after, reconnects, ended = 0, 0, False
+                while not ended and reconnects <= 20:
+                    async for name, data in self.speech.segment_events(job["job_id"], after):
+                        if name.startswith("speech."):
+                            ended = True
+                            break
+                        if name != "segment.ready":
+                            continue
+                        index = int(data["index"])
+                        wav = await self._retrying(
+                            f"turn {tid} segment", lambda job=job, index=index: self.speech.segment_audio(job["job_id"], index),
+                            retryable_exc=SpeechError)
+                        duration = audio.info(wav).duration_ms
+                        folder.mkdir(parents=True, exist_ok=True)
+                        _write_atomic(folder / f"{len(segments) + 1}.wav", wav)
+                        segments.append({"index": len(segments) + 1, "duration_ms": duration, "offset_ms": offset})
+                        offset += duration
+                        after = index
+                        self._publish(self.store.update_turn(tid, segments_json=json.dumps(segments)))
+                    else:
+                        reconnects += 1  # closed without an end: the 10-minute limit; resume
+                        continue
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - never fails the turn
+            log.info("turn %s: segment stream stopped (%s)", tid, getattr(exc, "code", type(exc).__name__))
+
+    async def _drain_stream(self, tid: str) -> None:
+        """After the turn ended, let the follower collect the last sentences (the
+        app may still be playing them), for a short while at most."""
+        task = self._streams.pop(tid, None)
+        if task is None:
+            return
+        done, _ = await asyncio.wait({task}, timeout=10.0)
+        if not done:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    def _cancel_stream(self, tid: str) -> None:
+        task = self._streams.pop(tid, None)
+        if task is not None:
+            task.cancel()
+
     # --- retention ----------------------------------------------------------------------------
 
     def sweep(self) -> int:
@@ -317,6 +383,7 @@ class Pipeline:
         for t in self.store.expired_audio(self.settings.audio_retention_days):
             with contextlib.suppress(FileNotFoundError):
                 (self.store.turn_dir(t["id"]) / "reply.wav").unlink()
+            shutil.rmtree(self.store.turn_dir(t["id"]) / "segments", ignore_errors=True)
             self.store.update_turn(t["id"], audio_deleted=1)
             n += 1
         return n

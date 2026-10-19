@@ -86,7 +86,8 @@ async def test_a_turn_goes_from_thinking_to_ready_with_audio_timings_and_push(re
         assert req["text"] == text
         # Every state change is an event.
         events = relay.store.events_after(conv["id"], 0)
-        assert [json.loads(e["data_json"])["state"] for e in events] == ["thinking", "speaking", "ready"]
+        states = [json.loads(e["data_json"])["state"] for e in events]
+        assert [k for i, k in enumerate(states) if i == 0 or k != states[i - 1]] == ["thinking", "speaking", "ready"]
         listed = (await c.get("/api/v1/conversations", headers=AUTH)).json()["conversations"]
         assert listed[0]["id"] == conv["id"] and listed[0]["title"] == "How should I plan my week?"
         assert listed[0]["last_turn"]["state"] == "ready"
@@ -341,7 +342,7 @@ async def test_event_stream_replays_then_follows(relay):
         chunks.append(chunk)
     assert chunks[0] == "retry: 2000\n\n"
     events = [ch for ch in chunks if ch.startswith("id: ")]
-    assert len(events) == 3 and all("event: turn.updated" in e for e in events)
+    assert len(events) >= 3 and all("event: turn.updated" in e for e in events)
     assert ": keep-alive\n\n" in chunks
     last_id = int(events[-1].split("\n")[0][4:])
     resumed = [ch async for ch in event_stream(relay.store, relay.pipeline, conv["id"], last_id, heartbeat=0.05,
@@ -413,3 +414,38 @@ async def test_conversations_are_searched_by_title_question_and_reply(relay):
         assert bad.status_code == 422
         everything = (await c.get("/api/v1/conversations", headers=AUTH)).json()["conversations"]
         assert len(everything) == 2 and "snippet" not in everything[0]
+
+
+async def test_sentences_are_streamed_while_the_reply_is_rendered(relay):
+    async with client_for(relay) as c:
+        conv, turn = await new_turn(c, "Tell me a long story please", "ct-seg")
+        await settle(relay)
+        done = (await c.get(f"/api/v1/conversations/{conv['id']}/turns/{turn.json()['id']}", headers=AUTH)).json()
+        segs = done["segments"]
+        assert segs and [s["index"] for s in segs] == list(range(1, len(segs) + 1))
+        assert segs[0]["offset_ms"] == 0
+        for a, b in zip(segs, segs[1:]):
+            assert b["offset_ms"] == a["offset_ms"] + a["duration_ms"]
+        # The streamed sentences are the whole reply: same length as the joined audio.
+        assert segs[-1]["offset_ms"] + segs[-1]["duration_ms"] == done["audio"]["duration_ms"]
+        first = await c.get(segs[0]["url"], headers=AUTH)
+        assert first.status_code == 200 and first.headers["content-type"] == "audio/wav"
+        assert audio.info(first.content).duration_ms == segs[0]["duration_ms"]
+        assert (await c.get(segs[0]["url"].rsplit("/", 2)[0] + "/99/audio", headers=AUTH)).status_code == 404
+        assert (await c.get(segs[0]["url"], headers={})).status_code == 401
+        events = relay.store.events_after(conv["id"], 0)
+        assert sum(1 for e in events if json.loads(e["data_json"])["segments"]) >= len(segs)
+
+
+async def test_a_refused_segment_stream_leaves_the_turn_unaffected(relay):
+    async def refuse(job_id, after=0):
+        from parley_relay.voicelab import SpeechError
+        raise SpeechError("too_many_streams", status=429, retryable=True)
+        yield  # pragma: no cover
+
+    relay.pipeline.speech.segment_events = refuse
+    async with client_for(relay) as c:
+        conv, turn = await new_turn(c, "Another one", "ct-429")
+        await settle(relay)
+        done = (await c.get(f"/api/v1/conversations/{conv['id']}/turns/{turn.json()['id']}", headers=AUTH)).json()
+        assert done["state"] == "ready" and done["segments"] == []

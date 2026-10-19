@@ -197,6 +197,21 @@ def build_app(
         data = await asyncio.to_thread(path.read_bytes)
         return ranged(request, data, "audio/wav", extra_headers={"cache-control": "private, max-age=86400"})
 
+    async def turn_segment_audio(request: Request) -> Response:
+        """One sentence of a reply still being spoken (or just spoken)."""
+        t = turn_or_404(request)
+        if t is None:
+            return error(404, "turn_not_found")
+        n = request.path_params["n"]
+        known = {seg["index"] for seg in json.loads(t["segments_json"] or "[]")}
+        if not n.isdigit() or int(n) not in known:
+            return error(404, "segment_not_found")
+        path = store.turn_dir(t["id"]) / "segments" / f"{int(n)}.wav"
+        if not path.exists():
+            return error(410, "audio_expired")
+        data = await asyncio.to_thread(path.read_bytes)
+        return ranged(request, data, "audio/wav", extra_headers={"cache-control": "private, max-age=86400"})
+
     async def turn_timings(request: Request) -> Response:
         t = turn_or_404(request)
         if t is None:
@@ -318,6 +333,8 @@ def build_app(
         Route("/api/v1/conversations/{cid}/events", guard(events), methods=["GET"]),
         Route("/api/v1/conversations/{cid}/turns/{tid}", guard(get_turn), methods=["GET"]),
         Route("/api/v1/conversations/{cid}/turns/{tid}/audio", guard(turn_audio), methods=["GET", "HEAD"]),
+        Route("/api/v1/conversations/{cid}/turns/{tid}/segments/{n}/audio", guard(turn_segment_audio),
+              methods=["GET", "HEAD"]),
         Route("/api/v1/conversations/{cid}/turns/{tid}/timings.json", guard(turn_timings), methods=["GET"]),
         Route("/api/v1/devices", guard(register_device), methods=["POST"]),
         Route("/api/v1/devices", guard(list_devices), methods=["GET"]),

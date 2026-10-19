@@ -164,6 +164,21 @@ final class RelayClientTests: XCTestCase {
         XCTAssertEqual(url.query, "q=budget%20%26%20review")
     }
 
+    func testASpeakingTurnListsItsStreamedSentences() throws {
+        let json = """
+        {"id":"t_1","conversation_id":"c_1","seq":1,"client_turn_id":"x","state":"speaking","user_text":"hi",
+         "reply_text":"One. Two.","created_at":"a","updated_at":"b",
+         "segments":[{"index":1,"duration_ms":1200,"offset_ms":0,"url":"/api/v1/conversations/c_1/turns/t_1/segments/1/audio"},
+                     {"index":2,"duration_ms":900,"offset_ms":1200,"url":"/api/v1/conversations/c_1/turns/t_1/segments/2/audio"}]}
+        """
+        let turn = try ParleyJSON.decoder.decode(Turn.self, from: Data(json.utf8))
+        XCTAssertEqual(turn.segments?.map(\.index), [1, 2])
+        XCTAssertEqual(turn.segments?[1].offsetMs, 1200)
+        let old = try ParleyJSON.decoder.decode(Turn.self, from: Data(
+            #"{"id":"t","conversation_id":"c","seq":1,"client_turn_id":"x","state":"thinking","user_text":"hi","created_at":"a","updated_at":"b"}"#.utf8))
+        XCTAssertNil(old.segments)
+    }
+
     func testRelayURLParsing() {
         XCTAssertEqual(RelayConfiguration.parseURL("relay.example.ts.net/")?.absoluteString,
                        "https://relay.example.ts.net")

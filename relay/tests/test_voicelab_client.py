@@ -86,3 +86,18 @@ def test_webhook_verification(secret):
     other = WebhookSecret(b"x" * 32)
     with pytest.raises(WebhookError):
         verify_webhook(other, headers, body)
+
+
+async def test_segment_events_follow_a_job_and_resume_after_a_segment():
+    fake = FakeVoiceLab(autorun=False)
+    client = make(fake)
+    st = await client.create("A first sentence that is long. A second one here.", idempotency_key="turn-ev")
+    await fake.render(st["id"])
+    seen = [(name, data.get("index")) async for name, data in client.segment_events(st["id"])]
+    assert seen == [("segment.ready", 1), ("segment.ready", 2), ("speech.succeeded", None)]
+    resumed = [name async for name, _ in client.segment_events(st["id"], after=1)]
+    assert resumed == ["segment.ready", "speech.succeeded"]
+    with pytest.raises(SpeechError) as exc:
+        [x async for x in client.segment_events("sp-nope")]
+    assert exc.value.code == "speech_not_found"
+    await client.aclose()

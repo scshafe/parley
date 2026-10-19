@@ -7,11 +7,13 @@ struct ParleyApp: App {
     @State private var model = AppModel.shared
     @State private var player: PlayerController
     @State private var dictation: Dictation
+    @State private var live: LivePlayer
     private let container: ModelContainer
 
     init() {
         let player = PlayerController()
         _player = State(initialValue: player)
+        _live = State(initialValue: LivePlayer(player: player))
         _dictation = State(initialValue: Dictation(player: player))
         container = CacheStore.makeContainer(inMemory: AppModel.isUITesting)
         AudioCache.prune(olderThanDays: 7)
@@ -23,6 +25,7 @@ struct ParleyApp: App {
                 .environment(model)
                 .environment(player)
                 .environment(dictation)
+                .environment(live)
         }
         .modelContainer(container)
     }
