@@ -191,6 +191,17 @@ async def test_without_the_key_push_is_off_logged_once_and_turns_on_when_placed(
     await s.aclose()
 
 
+async def test_no_log_line_names_a_device_token(tmp_path, key, apns, caplog):
+    store = Devices((TOKEN_A, "sandbox"))
+    s = sender(store, write_key(tmp_path / "k.p8", key), apns)
+    with caplog.at_level(logging.INFO):  # every logger, httpx's request lines included
+        await s.reply_ready("c", "t1")
+    await s.aclose()
+    assert store.pushes == [("d_0", 200)]
+    assert any("/3/device/<device token>" in m for m in caplog.messages)
+    assert TOKEN_A not in caplog.text
+
+
 async def test_unconfigured_and_unreachable_push_never_raises(tmp_path, key):
     off = APNsSender(Devices((TOKEN_A, "sandbox")), key_file=None, key_id=None, team_id=None)
     assert off.describe().startswith("off") and not off.configured
