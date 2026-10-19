@@ -262,7 +262,7 @@ async def test_a_ready_turn_is_pushed_to_the_registered_phone(relay, tmp_path, k
         turn = (await c.post(f"/api/v1/conversations/{conv['id']}/turns",
                              json={"text": "Hello there", "client_turn_id": "ct-1"}, headers=AUTH)).json()
         for _ in range(500):
-            if apns.requests:
+            if apns.requests and relay.store.get_turn(turn["id"])["pushed"]:
                 break
             await asyncio.sleep(0.01)
     await relay.pipeline.stop()

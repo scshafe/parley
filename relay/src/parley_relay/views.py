@@ -18,6 +18,10 @@ def turn_json(t: dict) -> dict:
         "reply_text": t["reply_text"],
         "attachment": t["attachment"],
         "style_version": t["style_version"],
+        "segments": [
+            {**seg, "url": f"{base}/segments/{seg['index']}/audio"}
+            for seg in (json.loads(t["segments_json"]) if t.get("segments_json") else [])
+        ],
         "audio": (
             {
                 "url": f"{base}/audio",

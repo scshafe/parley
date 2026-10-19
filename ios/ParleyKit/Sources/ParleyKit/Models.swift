@@ -46,6 +46,23 @@ public struct RelayErrorInfo: Codable, Hashable, Sendable {
     public var detail: String
 }
 
+/// One sentence of a reply that is still being spoken (or just was): playable
+/// as soon as the relay lists it, before the whole reply is ready. `offsetMs`
+/// is where it starts in the joined reply.
+public struct TurnSegment: Codable, Hashable, Sendable {
+    public var index: Int
+    public var durationMs: Int
+    public var offsetMs: Int
+    public var url: String
+
+    public init(index: Int, durationMs: Int, offsetMs: Int, url: String) {
+        self.index = index
+        self.durationMs = durationMs
+        self.offsetMs = offsetMs
+        self.url = url
+    }
+}
+
 public struct Turn: Codable, Hashable, Identifiable, Sendable {
     public var id: String
     public var conversationId: String
@@ -57,6 +74,8 @@ public struct Turn: Codable, Hashable, Identifiable, Sendable {
     public var attachment: String?
     public var styleVersion: String?
     public var audio: TurnAudio?
+    /// The sentences spoken so far, in order; nil from a relay that does not stream them.
+    public var segments: [TurnSegment]?
     public var timingsUrl: String?
     public var error: RelayErrorInfo?
     public var createdAt: String
@@ -64,8 +83,8 @@ public struct Turn: Codable, Hashable, Identifiable, Sendable {
 
     public init(id: String, conversationId: String, seq: Int, clientTurnId: String, state: TurnState,
                 userText: String, replyText: String? = nil, attachment: String? = nil, styleVersion: String? = nil,
-                audio: TurnAudio? = nil, timingsUrl: String? = nil, error: RelayErrorInfo? = nil,
-                createdAt: String = "", updatedAt: String = "") {
+                audio: TurnAudio? = nil, segments: [TurnSegment]? = nil, timingsUrl: String? = nil,
+                error: RelayErrorInfo? = nil, createdAt: String = "", updatedAt: String = "") {
         self.id = id
         self.conversationId = conversationId
         self.seq = seq
@@ -76,6 +95,7 @@ public struct Turn: Codable, Hashable, Identifiable, Sendable {
         self.attachment = attachment
         self.styleVersion = styleVersion
         self.audio = audio
+        self.segments = segments
         self.timingsUrl = timingsUrl
         self.error = error
         self.createdAt = createdAt

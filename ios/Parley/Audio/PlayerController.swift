@@ -22,6 +22,8 @@ final class PlayerController {
 
     var state: PlaybackState { machine.state }
 
+    /// Called when a reply is about to load (or playback stops), so live playback of sentences yields to it.
+    @ObservationIgnored var willTakeOver: (() -> Void)?
     @ObservationIgnored private var player: AVAudioPlayer?
     @ObservationIgnored private var cursor: HighlightCursor?
     @ObservationIgnored private var displayLink: CADisplayLink?
@@ -58,6 +60,7 @@ final class PlayerController {
 
     /// Load a ready turn's audio file and timings, replacing whatever played before.
     func load(turnID: String, audioFile: URL, timings: Timings?, title: String) {
+        willTakeOver?()
         stopClock()
         player?.stop()
         player = nil
@@ -123,6 +126,7 @@ final class PlayerController {
     }
 
     func stop() {
+        willTakeOver?()
         stopClock()
         player?.stop()
         player = nil

@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS turns (
     cleanup_json TEXT,
     style_version TEXT,
     jobs_json TEXT,
+    segments_json TEXT,
     audio_duration_ms INTEGER,
     timings_exact INTEGER,
     error_code TEXT,
@@ -112,6 +113,9 @@ class Store:
         self._db.execute("PRAGMA foreign_keys=ON")
         self._db.execute("PRAGMA busy_timeout=5000")
         self._db.executescript(SCHEMA)
+        columns = {r["name"] for r in self._db.execute("PRAGMA table_info(turns)")}
+        if "segments_json" not in columns:  # a database made before the streamed segments
+            self._db.execute("ALTER TABLE turns ADD COLUMN segments_json TEXT")
         self._lock = threading.RLock()
 
     def close(self) -> None:

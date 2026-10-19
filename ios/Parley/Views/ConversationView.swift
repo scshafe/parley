@@ -15,6 +15,7 @@ struct ConversationView: View {
     @Binding var path: NavigationPath
     @Environment(AppModel.self) private var model
     @Environment(Dictation.self) private var dictation
+    @Environment(LivePlayer.self) private var live
     @Environment(\.modelContext) private var context
     @State private var conversationID: String?
     @State private var turns: [ParleyKit.Turn] = []
@@ -51,9 +52,9 @@ struct ConversationView: View {
                             .padding(.top, 40)
                     }
                     ForEach(turns) { turn in
-                        TurnRow(turn: turn) {
-                            path.append(ReaderRoute(turn: turn))
-                        }
+                        TurnRow(turn: turn, isLive: live.turnID == turn.id, isLivePlaying: live.isPlaying,
+                                onPlay: { path.append(ReaderRoute(turn: turn)) },
+                                onLive: { toggleLive(turn) })
                         .id(turn.id)
                     }
                     if let errorText {
@@ -252,6 +253,16 @@ struct ConversationView: View {
         }
         CacheStore.save(turns: [turn], in: context)
         model.notifier.observe(turn)
+        live.update(turn)
+    }
+
+    /// Listen to a reply still being spoken, from its first sentence.
+    private func toggleLive(_ turn: ParleyKit.Turn) {
+        if live.turnID == turn.id {
+            live.toggle()
+        } else if let client = model.client {
+            live.start(turn: turn, client: client)
+        }
     }
 
     private func refresh(_ client: RelayClient, _ conversationID: String) async throws {
@@ -297,7 +308,10 @@ struct ConversationView: View {
 
 struct TurnRow: View {
     let turn: ParleyKit.Turn
+    let isLive: Bool
+    let isLivePlaying: Bool
     let onPlay: () -> Void
+    let onLive: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -313,6 +327,15 @@ struct TurnRow: View {
                         .accessibilityIdentifier("turnState-\(turn.seq)")
                         .accessibilityValue(turn.state.rawValue)
                     Spacer()
+                    if LivePlayer.canListen(turn) || isLive {
+                        Button(action: onLive) {
+                            Label(isLive ? (isLivePlaying ? "Pause" : "Resume") : "Listen now",
+                                  systemImage: isLive && isLivePlaying ? "pause.circle.fill" : "play.circle.fill")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .accessibilityIdentifier("listenLive-\(turn.seq)")
+                    }
                     if turn.state == .ready {
                         Button(action: onPlay) {
                             Label("Play", systemImage: "play.circle.fill")

@@ -295,7 +295,7 @@ class FakeVoiceLab:
         text = job.text or ""
         spans = voice_lab_sentences(text, max_sentence_chars=self.max_sentence_chars)
         job.segment_count = len(spans)
-        job.changed.set()
+        self._pulse(job)
         failure, self.fail_next = self.fail_next, None
         for i, span in enumerate(spans, start=1):
             if job.cancel_requested:

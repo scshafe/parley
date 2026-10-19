@@ -271,6 +271,15 @@ public final class RelayClient: @unchecked Sendable {
     /// Download a ready turn's audio to `destination` (replacing a file there).
     public func downloadAudio(for turn: Turn, to destination: URL) async throws {
         guard let path = turn.audio?.url else { throw RelayError.badResponse }
+        try await download(path, to: destination)
+    }
+
+    /// Download one streamed sentence of a reply that is still being spoken.
+    public func downloadSegment(_ segment: TurnSegment, to destination: URL) async throws {
+        try await download(segment.url, to: destination)
+    }
+
+    private func download(_ path: String, to destination: URL) async throws {
         let tmp: URL = try await authorized { token in
             let (tmp, response): (URL, URLResponse)
             do {

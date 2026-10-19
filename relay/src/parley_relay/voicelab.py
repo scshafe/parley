@@ -12,8 +12,9 @@ import base64
 import binascii
 import hashlib
 import hmac
+import json
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -130,6 +131,40 @@ class SpeechClient:
 
     async def segment_audio(self, job_id: str, index: int) -> bytes:
         return (await self._request("GET", f"/api/v1/speech/{job_id}/segments/{index}/audio")).content
+
+    async def segment_events(self, job_id: str, after: int = 0) -> AsyncIterator[tuple[str, dict]]:
+        """``GET /api/v1/speech/{id}/events``: each ``(event, data)`` of the job's
+        server-sent stream, ``segment.ready`` per sentence in order, then one
+        terminal ``speech.*``. ``after`` resumes after that segment
+        (``Last-Event-ID``). The stream is closed after 10 minutes and a fifth
+        concurrent one answers ``429 too_many_streams``: the caller reconnects
+        or gives up. Comments (the 15 s keep-alive) are skipped."""
+        headers = await self._headers()
+        headers["accept"] = "text/event-stream"
+        if after:
+            headers["last-event-id"] = str(after)
+        try:
+            async with self._client.stream("GET", f"/api/v1/speech/{job_id}/events", headers=headers) as resp:
+                if resp.status_code >= 400:
+                    await resp.aread()
+                    raise _refusal(resp)
+                event, data = "", []
+                async for line in resp.aiter_lines():
+                    if not line:
+                        if data:
+                            try:
+                                body = json.loads("\n".join(data))
+                            except ValueError:
+                                body = None
+                            if isinstance(body, dict):
+                                yield event or "message", body
+                        event, data = "", []
+                    elif line.startswith("event:"):
+                        event = line[6:].strip()
+                    elif line.startswith("data:"):
+                        data.append(line[5:].removeprefix(" "))
+        except httpx.HTTPError as exc:
+            raise SpeechError("network_error", type(exc).__name__, retryable=True) from exc
 
     async def cancel(self, job_id: str) -> dict:
         return (await self._request("POST", f"/api/v1/speech/{job_id}/cancel")).json()
