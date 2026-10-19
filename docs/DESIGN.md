@@ -101,7 +101,7 @@ text today. Two ways to get it:
 
 - **P1, estimated.** Within each sentence, a word's time is proportional to its share of the sentence, weighted by syllables, with pauses added for punctuation. This costs nothing, but live F5 segments open with 0.9–1.9 s of silence and end on their last word, so the highlight ran about a second ahead (measured 2026-10-17 on three live replies against a CTC alignment: mean error 572–1,057 ms).
 - **P2, measured (current).** The relay reads the reply's loudness in 10 ms frames and places each sentence's words in the speech it hears. It chooses which silences are the pauses between words: long ones always are, and they go at punctuation wherever possible. Same three replies: mean error 84–120 ms, worst word 364 ms, under 40 ms of CPU. `"source": "measured"`; with no usable audio it falls back to P1. The app also allows for the audio route's output latency (about 0.2 s on AirPods).
-- **P3, aligned.** Forced alignment of each segment's audio against its known text, in the relay on CPU. A CTC aligner, for example torchaudio's MMS forced aligner, places each word to within tens of milliseconds. The text is known, so this is alignment, not recognition, and it does not mishear words. The result has the same format as P1, so the app does not change.
+- **P3, aligned (decided against, 2026-10-19).** The owner skipped it: measured timing is good enough, so there is no forced alignment and no torch. voice-lab's segment text ranges (voice-lab #78) will still land on its side; the relay uses them where that improves highlighting cheaply. What this step was: forced alignment of each segment's audio against its known text, in the relay on CPU. A CTC aligner, for example torchaudio's MMS forced aligner, places each word to within tens of milliseconds. The text is known, so this is alignment, not recognition, and it does not mishear words. The result has the same format as P1, so the app does not change.
 
 `timings.json` holds an entry for each word, with its character range in the
 shown text and its start and end time. Sentence boundaries are marked too.
@@ -162,7 +162,7 @@ Mini's gateway, `openclaw.<tailnet>`, which is reachable today.
 | P0 | This design, the decisions below, and the project set up: repository, `agent-parley`, picker, publication. | Done 2026-10-15. |
 | P1 | The relay pipeline with fakes. The app: conversations, composer, reader-player with estimated word timings, polling instead of push. | Done 2026-10-15: `[verify]` green; CI's UI tests run the app in the simulator against `parley-relay --dev`. |
 | P2 | Real integrations: the OpenClaw adapter, the voice-lab caller and webhook, APNs push, the Pocket ID sign-in, the relay deployed. Owner steps: register the voice-lab caller and the Pocket ID clients, place the APNs key, enable OpenClaw's HTTP endpoint. | One real turn on the phone: a notification, the owner's voice, highlighting in sync. |
-| P3 | Forced alignment for word timings, plus the voice-lab segment-range change (a voice-lab PR by its agent). | Highlight drift under 100 ms on 20 sample replies. |
+| P3 | Forced alignment for word timings, plus the voice-lab segment-range change (a voice-lab PR by its agent). | **Skipped by the owner, 2026-10-19:** measured timing (P2) is good enough. The segment-range change (voice-lab #78) is still used when it lands. |
 | P4 | Play from the first sentence (voice-lab segment SSE). Voice input with on-device speech recognition. Conversation search. | Built: [Playing from the first sentence](#playing-from-the-first-sentence), [the Action Button and dictation](#the-action-button-and-dictation) and [conversation search](#conversation-search). |
 
 ## P1 build decisions
@@ -357,7 +357,8 @@ Built 2026-10-19. `GET /api/v1/conversations?q=<text>` returns the conversations
 What the build settled (2026-10-16). The code is the reference.
 
 - **The intent.** `NewConversationIntent` ("New Parley Conversation", `ios/Parley/Intents.swift`), offered through `ParleyShortcuts`, an `AppShortcutsProvider`. That puts it in Settings → Action Button → Shortcut → Parley and in the Shortcuts app.
-  - It runs in the app (`supportedModes = .foreground(.immediate)`), with no extension, so the free team's one target is enough. A Control Center control (a widget extension) is a follow-up.
+  - **Decided 2026-10-19: no Control Center control.** The Action Button already works through this App Shortcut, and the owner does not want a widget otherwise.
+  - It runs in the app (`supportedModes = .foreground(.immediate)`), with no extension, so the free team's one target is enough.
   - It bumps `AppModel.dictatedConversationRequests`. The root view then does one of three things:
     - while a dictation listens, it sends it ("send now");
     - while one is finishing, it does nothing;

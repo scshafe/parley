@@ -101,3 +101,26 @@ async def test_segment_events_follow_a_job_and_resume_after_a_segment():
         [x async for x in client.segment_events("sp-nope")]
     assert exc.value.code == "speech_not_found"
     await client.aclose()
+
+
+async def test_a_running_job_does_not_leave_its_change_event_set():
+    # A set event makes every event stream spin without yielding, which grew a
+    # local dev relay's memory without bound (an OOM kill on 2026-10-19).
+    import asyncio
+
+    fake = FakeVoiceLab(autorun=False, speed=0.2)
+    client = make(fake)
+    st = await client.create("A first sentence that is long. A second one here.", idempotency_key="turn-spin")
+    task = asyncio.create_task(fake.render(st["id"]))
+    await asyncio.sleep(0.05)
+    assert not fake.jobs[st["id"]].changed.is_set()
+    seen = []
+
+    async def follow():
+        async for name, _ in client.segment_events(st["id"]):
+            seen.append(name)
+
+    await asyncio.wait_for(follow(), 10)
+    await task
+    assert seen[-1] == "speech.succeeded"
+    await client.aclose()

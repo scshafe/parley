@@ -7,6 +7,7 @@ The relay between the Parley app and the agent and voice-lab. Design:
 
 ```sh
 cd relay
+# Run any local server under a memory cap, e.g. systemd-run --user --scope -p MemoryMax=2G
 uv run parley-relay --dev            # http://127.0.0.1:8765, bearer token: parley-dev
 ```
 
