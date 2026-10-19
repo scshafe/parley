@@ -449,3 +449,17 @@ async def test_a_refused_segment_stream_leaves_the_turn_unaffected(relay):
         await settle(relay)
         done = (await c.get(f"/api/v1/conversations/{conv['id']}/turns/{turn.json()['id']}", headers=AUTH)).json()
         assert done["state"] == "ready" and done["segments"] == []
+
+
+async def test_segments_stream_while_a_slow_render_is_going(tmp_path):
+    r = build(dev_settings(tmp_path, fake_speech_speed=0.05))
+    await r.pipeline.start()
+    try:
+        async with client_for(r) as c:
+            conv, turn = await new_turn(c, "Tell me about bread. Then about butter. And jam too.", "ct-slow")
+            await settle(r)
+            done = (await c.get(f"/api/v1/conversations/{conv['id']}/turns/{turn.json()['id']}", headers=AUTH)).json()
+            assert done["state"] == "ready" and len(done["segments"]) >= 2
+    finally:
+        await r.pipeline.stop()
+        r.store.close()
