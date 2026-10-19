@@ -200,6 +200,20 @@ class Store:
             ids = [r["id"] for r in self._db.execute("SELECT id FROM conversations ORDER BY updated_at DESC, id")]
         return [c for c in (self.get_conversation(i) for i in ids) if c]
 
+    def search_conversations(self, query: str) -> list[tuple[dict, str]]:
+        """Conversations whose title or any turn's text contains ``query``
+        (case-insensitive), newest first, each with the first matching text."""
+        needle = query.casefold()
+        found = []
+        for conv in self.list_conversations():
+            texts = [conv["title"] or ""]
+            for turn in self.turns_of(conv["id"]):
+                texts += [turn["user_text"], turn["reply_text"] or ""]
+            hit = next((t for t in texts if needle in t.casefold()), None)
+            if hit is not None:
+                found.append((conv, hit))
+        return found
+
     # --- turns ------------------------------------------------------------------------------
 
     def add_turn(self, cid: str, client_turn_id: str, text: str) -> tuple[dict, bool]:

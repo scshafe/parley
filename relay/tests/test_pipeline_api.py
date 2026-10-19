@@ -393,3 +393,23 @@ async def test_the_database_snapshot_is_consistent_and_restores(tmp_path):
     store = Store(tmp_path / "data")
     assert store.get_turn(resp.json()["id"])["state"] == "ready"
     store.close()
+
+
+async def test_conversations_are_searched_by_title_question_and_reply(relay):
+    async with client_for(relay) as c:
+        first, _ = await new_turn(c, "Remind me about the Budget review", "ct-a")
+        second, _ = await new_turn(c, "What is the weather?", "ct-b")
+        await settle(relay)
+        found = (await c.get("/api/v1/conversations", params={"q": "budget"}, headers=AUTH)).json()["conversations"]
+        assert [x["id"] for x in found] == [first["id"]]
+        assert "Budget review" in found[0]["snippet"]
+        reply = relay.store.turns_of(second["id"])[0]["reply_text"]
+        word = reply.split()[0].strip(".,!?")
+        hits = (await c.get("/api/v1/conversations", params={"q": word}, headers=AUTH)).json()["conversations"]
+        assert second["id"] in [x["id"] for x in hits]
+        none = (await c.get("/api/v1/conversations", params={"q": "zzzqqq"}, headers=AUTH)).json()
+        assert none == {"conversations": []}
+        bad = await c.get("/api/v1/conversations", params={"q": "  "}, headers=AUTH)
+        assert bad.status_code == 422
+        everything = (await c.get("/api/v1/conversations", headers=AUTH)).json()["conversations"]
+        assert len(everything) == 2 and "snippet" not in everything[0]

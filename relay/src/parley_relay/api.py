@@ -61,6 +61,14 @@ def error(status: int, code: str, detail: str = "") -> JSONResponse:
                         headers={"cache-control": "no-store"})
 
 
+def snippet(text: str, query: str, width: int = 60) -> str:
+    """The part of ``text`` around the first match, on one line."""
+    at = max(text.casefold().find(query.casefold()), 0)
+    start = max(at - width, 0)
+    part = " ".join(text[start : at + len(query) + width].split())
+    return ("…" if start else "") + part + ("…" if at + len(query) + width < len(text) else "")
+
+
 def ok(body: object, status: int = 200) -> JSONResponse:
     return JSONResponse(body, status_code=status, headers={"cache-control": "no-store"})
 
@@ -134,7 +142,14 @@ def build_app(
         return ok(conversation_json(conv), 201)
 
     async def list_conversations(request: Request) -> Response:
-        return ok({"conversations": [conversation_json(c) for c in store.list_conversations()]})
+        q = request.query_params.get("q")
+        if q is None:
+            return ok({"conversations": [conversation_json(c) for c in store.list_conversations()]})
+        q = q.strip()
+        if not q or len(q) > 200:
+            return error(422, "invalid_request", "A search is 1 to 200 characters.")
+        return ok({"conversations": [{**conversation_json(c), "snippet": snippet(text, q)}
+                                     for c, text in store.search_conversations(q)]})
 
     async def get_conversation(request: Request) -> Response:
         conv = conversation_or_404(request)

@@ -149,6 +149,21 @@ final class RelayClientTests: XCTestCase {
         XCTAssertNil(list[0].turns)
     }
 
+    func testSearchSendsTheQueryEncodedAndReadsSnippets() async throws {
+        StubProtocol.handler = { _ in
+            let json = """
+            {"conversations":[{"id":"c_1","title":"Plan","created_at":"a","updated_at":"b","turn_count":1,
+              "last_event_id":0,"last_turn":null,"snippet":"…the budget review…"}]}
+            """
+            return (200, [:], Data(json.utf8))
+        }
+        let found = try await client.searchConversations("budget & review")
+        XCTAssertEqual(found.first?.snippet, "…the budget review…")
+        let url = try XCTUnwrap(StubProtocol.seen.last?.url)
+        XCTAssertEqual(url.path, "/api/v1/conversations")
+        XCTAssertEqual(url.query, "q=budget%20%26%20review")
+    }
+
     func testRelayURLParsing() {
         XCTAssertEqual(RelayConfiguration.parseURL("relay.example.ts.net/")?.absoluteString,
                        "https://relay.example.ts.net")
