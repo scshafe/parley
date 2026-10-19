@@ -220,6 +220,17 @@ public final class RelayClient: @unchecked Sendable {
         try await send("/api/v1/conversations", as: ConversationList.self).conversations
     }
 
+    /// Conversations whose title or any turn's text contains `query`, each with a `snippet`.
+    public func searchConversations(_ query: String) async throws -> [Conversation] {
+        var allowed = CharacterSet.alphanumerics
+        allowed.insert(charactersIn: "-._~")
+        guard let encoded = query.addingPercentEncoding(withAllowedCharacters: allowed) else {
+            throw RelayError.badResponse
+        }
+        let path = "/api/v1/conversations?q=\(encoded)"
+        return try await send(path, as: ConversationList.self).conversations
+    }
+
     public func createConversation(title: String? = nil) async throws -> Conversation {
         let body = try JSONSerialization.data(withJSONObject: title.map { ["title": $0] } ?? [String: String]())
         return try await send("/api/v1/conversations", method: "POST", body: body, as: Conversation.self)

@@ -11,6 +11,11 @@ struct ConversationsView: View {
     @State private var cached: [CachedConversation] = []
     @State private var errorText: String?
     @State private var loading = false
+    @State private var query = ""
+    @State private var results: [Conversation] = []
+    @State private var searchError: String?
+
+    private var searching: Bool { !query.trimmingCharacters(in: .whitespaces).isEmpty }
 
     var body: some View {
         List {
@@ -22,7 +27,24 @@ struct ConversationsView: View {
                         .accessibilityIdentifier("conversationsError")
                 }
             }
-            if conversations.isEmpty && !cached.isEmpty {
+            if searching {
+                if let searchError {
+                    Label(searchError, systemImage: "wifi.exclamationmark")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(results) { c in
+                    NavigationLink(value: ConversationRoute(id: c.id, title: c.displayTitle)) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(c.displayTitle).font(.headline).lineLimit(1)
+                            if let snippet = c.snippet {
+                                Text(snippet).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
+                            }
+                        }
+                    }
+                    .accessibilityIdentifier("result-\(c.id)")
+                }
+            } else if conversations.isEmpty && !cached.isEmpty {
                 Section("Offline") {
                     ForEach(cached) { c in
                         NavigationLink(value: ConversationRoute(id: c.id, title: c.title)) {
@@ -31,15 +53,21 @@ struct ConversationsView: View {
                     }
                 }
             }
-            ForEach(conversations) { c in
-                NavigationLink(value: ConversationRoute(id: c.id, title: c.displayTitle)) {
-                    ConversationRow(conversation: c)
+            if !searching {
+                ForEach(conversations) { c in
+                    NavigationLink(value: ConversationRoute(id: c.id, title: c.displayTitle)) {
+                        ConversationRow(conversation: c)
+                    }
+                    .accessibilityIdentifier("conversation-\(c.id)")
                 }
-                .accessibilityIdentifier("conversation-\(c.id)")
             }
         }
+        .searchable(text: $query, prompt: "Search conversations")
+        .task(id: query) { await search() }
         .overlay {
-            if conversations.isEmpty && cached.isEmpty && errorText == nil && !loading {
+            if searching && results.isEmpty && searchError == nil {
+                ContentUnavailableView.search(text: query)
+            } else if !searching && conversations.isEmpty && cached.isEmpty && errorText == nil && !loading {
                 ContentUnavailableView("No conversations yet", systemImage: "bubble.left.and.text.bubble.right",
                                        description: Text("Start one with the + button."))
             }
@@ -62,6 +90,26 @@ struct ConversationsView: View {
         .task(id: model.connectionKey) { await reload() }
         .onChange(of: path.count) { _, count in
             if count == 0 { Task { await reload() } }
+        }
+    }
+
+    /// Runs after a short pause, so typing does not send a request per letter.
+    private func search() async {
+        let text = query.trimmingCharacters(in: .whitespaces)
+        guard !text.isEmpty, let client = model.client else {
+            results = []
+            searchError = nil
+            return
+        }
+        try? await Task.sleep(for: .milliseconds(300))
+        guard !Task.isCancelled else { return }
+        do {
+            results = try await client.searchConversations(text)
+            searchError = nil
+        } catch is CancellationError {
+        } catch {
+            results = []
+            searchError = error.localizedDescription
         }
     }
 

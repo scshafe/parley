@@ -100,6 +100,8 @@ public struct Conversation: Codable, Hashable, Identifiable, Sendable {
     public var lastTurn: TurnSummary?
     /// Present when the conversation is fetched on its own.
     public var turns: [Turn]?
+    /// Present in search results: the text around the first match.
+    public var snippet: String?
 
     public var displayTitle: String {
         if let title, !title.isEmpty { return title }

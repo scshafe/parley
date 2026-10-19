@@ -339,6 +339,10 @@ Details the P2 build settled for the iOS app (2026-10-16). The code is the refer
   - A notification tap opens the payload's conversation, then the reader when the turn is ready. A newer tap replaces one still loading. A notification for the conversation on screen shows no banner.
 - **Local notifications without push.** A followed turn that becomes ready while the app is in the background, but still running, gets a local notification. It has the same ids and the same fixed text, "Reply ready". On leaving the app with a turn unfinished, the app asks for background time (about 30 seconds) and polls the turn; while a reply plays in the background, the app keeps running. A turn that takes longer than that, with nothing playing, gets no notice until push is on. Once push is registered and the relay says it can push (the registration's `push`), no local notification is sent. The watched turns are cleared when the relay or the sign-in changes, and dropped after 35 minutes (the relay gives up on a turn after 30).
 
+## Conversation search
+
+Built 2026-10-19. `GET /api/v1/conversations?q=<text>` returns the conversations whose title, or any turn's question or reply text, contains the text (case-insensitive substring, newest first). Each result has a `snippet`: the text around the first match, on one line. An empty or over-200-character `q` is a 422. The relay scans in Python; at one owner's volume that is cheap, and SQLite FTS can replace it if it ever is not. The app's list uses `.searchable`, waits 300 ms after typing, and shows the snippet. Search needs the relay: offline, the cached list is not searched.
+
 ## The Action Button and dictation
 
 What the build settled (2026-10-16). The code is the reference.
