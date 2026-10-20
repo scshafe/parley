@@ -111,7 +111,7 @@ class FakeVoiceLab:
         autorun: bool = True,
         max_text_characters: int = 2000,
         max_queued_jobs: int = 4,
-        report_ranges: bool = False,
+        report_ranges: bool | None = True,
         max_sentence_chars: int | None = None,
     ) -> None:
         self.token = token
@@ -162,6 +162,15 @@ class FakeVoiceLab:
     def _job(self, request: Request) -> _Job | None:
         return self.jobs.get(request.path_params["id"])
 
+    def range_fields(self, s: _Segment) -> dict:
+        """``report_ranges``: True reports them; None reports null (a segment
+        rendered before voice-lab#110); False leaves the keys out."""
+        if self.report_ranges is None:
+            return {"text_start": None, "text_end": None}
+        if self.report_ranges:
+            return {"text_start": s.text_start, "text_end": s.text_end}
+        return {}
+
     def status_body(self, job: _Job) -> dict:
         segs = [
             {
@@ -170,7 +179,7 @@ class FakeVoiceLab:
                 "bytes": len(s.wav),
                 "duration_ms": s.duration_ms,
                 "audio": f"/api/v1/speech/{job.id}/segments/{s.index}/audio",
-                **({"text_start": s.text_start, "text_end": s.text_end} if self.report_ranges else {}),
+                **self.range_fields(s),
             }
             for s in job.segments
         ]
@@ -434,7 +443,8 @@ class FakeVoiceLab:
                 seg = job.segments[sent]
                 data = {"index": seg.index, "sha256": seg.sha256, "bytes": len(seg.wav),
                         "duration_ms": seg.duration_ms,
-                        "audio": f"/api/v1/speech/{job.id}/segments/{seg.index}/audio"}
+                        "audio": f"/api/v1/speech/{job.id}/segments/{seg.index}/audio",
+                        **self.range_fields(seg)}
                 yield f"id: {seg.index}\nevent: segment.ready\ndata: {json.dumps(data)}\n\n"
                 sent += 1
             if job.state in ("succeeded", "failed", "cancelled", "expired"):

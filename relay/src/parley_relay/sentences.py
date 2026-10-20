@@ -1,9 +1,10 @@
 """Which characters each speech segment spoke, and where a long reply is cut.
 
-voice-lab renders one segment per sentence, but its segment records do not
-carry their text yet (voice-lab#78 adds ``text_start``/``text_end``). Until
-then the relay repeats voice-lab's documented splitting rule (SPEECH_API.md
-§7, "Sentences and seeds"):
+voice-lab renders one segment per sentence and reports each segment's range
+(``text_start``/``text_end``, Unicode code points into the text it received;
+null for segments rendered before voice-lab#110). The relay uses the ranges.
+For a segment without one it still repeats voice-lab's documented splitting
+rule (SPEECH_API.md §7, "Sentences and seeds"):
 
     The job runner splits the text into sentences (after ``.``, ``!``, ``?``,
     ``…`` and their CJK forms followed by a space or the end, and at line
@@ -11,8 +12,7 @@ then the relay repeats voice-lab's documented splitting rule (SPEECH_API.md
     one joins the sentence before it), and a sentence too long for one pass of the release's model is split at its last
     comma, semicolon or colon within the limit, else at a space.
 
-Everything that depends on the rule goes through :func:`segment_ranges`, so the
-day voice-lab reports each segment's range only that function changes.
+Everything that depends on the rule goes through :func:`segment_ranges`.
 
 All offsets are Python string indices: Unicode code points.
 """
@@ -138,11 +138,13 @@ def segment_ranges(
 ) -> list[Span] | None:
     """The span of ``text`` each speech segment spoke, in segment order.
 
-    When every segment carries ``text_start``/``text_end`` (voice-lab#78) they
-    are used as given. Otherwise the documented rule is repeated; if it does
-    not give one sentence per segment, the answer is ``None`` and the caller
-    falls back to treating the job as one span."""
-    if segments and all("text_start" in s and "text_end" in s for s in segments):
+    When every segment carries a ``text_start``/``text_end`` (not missing, not
+    null) they are used as given: they are code points, as are Python's string
+    indices. If they do not fit the text the answer is ``None``. When any
+    segment has none (rendered before voice-lab#110) the documented rule is
+    repeated; if it does not give one sentence per segment, the answer is
+    ``None`` and the caller falls back to treating the job as one span."""
+    if segments and all(s.get("text_start") is not None and s.get("text_end") is not None for s in segments):
         spans = [Span(int(s["text_start"]), int(s["text_end"])) for s in segments]  # type: ignore[call-overload]
         if all(0 <= sp.start < sp.end <= len(text) for sp in spans):
             return spans

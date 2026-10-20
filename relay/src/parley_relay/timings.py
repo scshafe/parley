@@ -315,7 +315,7 @@ def job_sentences(
     """Exact sentence times for one speech job.
 
     ``segments`` are the job's segment records in order (``duration_ms``, and
-    ``text_start``/``text_end`` once voice-lab reports them); ``offset_ms`` is
+    ``text_start``/``text_end``, null for old segments); ``offset_ms`` is
     where the job's audio starts in the reply's audio. Returns the sentences and
     whether each segment could be matched to its text; when it could not, the
     job is one sentence spanning its whole text."""
