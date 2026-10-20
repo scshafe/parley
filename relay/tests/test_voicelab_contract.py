@@ -24,7 +24,7 @@ EXAMPLE_STATUS = {"id": "sp-…", "state": "running", "client_ref": "…", "form
                   "text_characters": 182, "created_at": "…", "started_at": "…", "finished_at": None,
                   "queue_ms": 410, "render_ms": None, "segment_count": 3,
                   "segments": [{"index": 1, "sha256": "…", "bytes": 140844, "duration_ms": 2933,
-                                "audio": "/api/v1/speech/sp-…/segments/1/audio"}],
+                                "audio": "/api/v1/speech/sp-…/segments/1/audio", "text_start": 0, "text_end": 41}],
                   "audio": None, "error": None, "links": {"self": "…", "audio": "…", "events": "…", "cancel": "…"}}
 # §8 the webhook event.
 EXAMPLE_EVENT = {"type": "speech.succeeded", "timestamp": "2026-10-11T12:00:07Z",
@@ -84,6 +84,7 @@ async def test_status_and_segments_match_the_example_once_rendered(client, fake)
     assert st["state"] == "succeeded" and st["segment_count"] == 3 == len(st["segments"])
     for i, seg in enumerate(st["segments"], start=1):
         assert set(seg) == set(EXAMPLE_STATUS["segments"][0])
+        assert TEXT[seg["text_start"] : seg["text_end"]]
         assert seg["index"] == i and seg["audio"].endswith(f"/segments/{i}/audio")
     assert set(st["audio"]) == set(EXAMPLE_EVENT["data"]["audio"])
     assert st["audio"]["duration_ms"] == sum(s["duration_ms"] for s in st["segments"])

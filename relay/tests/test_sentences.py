@@ -112,3 +112,22 @@ def test_split_for_jobs_cuts_an_overlong_sentence():
     text = ("many words, " * 300).strip()
     jobs = split_for_jobs(text, limit=500)
     assert all(j.end - j.start <= 500 for j in jobs)
+
+
+def test_null_ranges_fall_back_to_the_rule():
+    # Segments rendered before voice-lab#110 report the keys as null.
+    text = "First sentence goes here. Second sentence is here."
+    segs = [{"text_start": None, "text_end": None}, {"text_start": None, "text_end": None}]
+    assert segment_ranges(text, segs) == [Span(0, 25), Span(26, 50)]
+    mixed = [{"text_start": 0, "text_end": 25}, {"text_start": None, "text_end": None}]
+    assert segment_ranges(text, mixed) == [Span(0, 25), Span(26, 50)]
+
+
+def test_reported_ranges_are_code_points_not_utf16_units():
+    text = "Hello 😀😀 friends, how are you? Fine thanks."
+    first = text.index("?") + 1
+    second = text.index("Fine")
+    segs = [{"text_start": 0, "text_end": first}, {"text_start": second, "text_end": len(text)}]
+    spans = segment_ranges(text, segs)
+    assert spans == [Span(0, first), Span(second, len(text))]
+    assert spans[0].of(text).endswith("you?") and spans[1].of(text) == "Fine thanks."

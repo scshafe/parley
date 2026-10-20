@@ -292,7 +292,6 @@ async def test_restart_reposts_with_the_same_idempotency_key(tmp_path):
 
 async def test_segment_ranges_from_voice_lab_are_used_when_reported(tmp_path):
     r = build(dev_settings(tmp_path))
-    r.fake_voicelab.report_ranges = True
     r.fake_voicelab.max_sentence_chars = 30  # a rule the relay does not know: only the ranges can tell
     await r.pipeline.start()
     async with client_for(r) as c:
@@ -307,6 +306,7 @@ async def test_segment_ranges_from_voice_lab_are_used_when_reported(tmp_path):
 
 async def test_a_segment_mismatch_degrades_gracefully(tmp_path):
     r = build(dev_settings(tmp_path))
+    r.fake_voicelab.report_ranges = None  # old segments: only the rule is left
     r.fake_voicelab.max_sentence_chars = 30  # voice-lab cuts sentences the relay does not expect
     await r.pipeline.start()
     async with client_for(r) as c:
@@ -463,3 +463,17 @@ async def test_segments_stream_while_a_slow_render_is_going(tmp_path):
     finally:
         await r.pipeline.stop()
         r.store.close()
+
+
+@pytest.mark.parametrize("reported", [None, False])
+async def test_old_segments_without_ranges_use_the_rule(tmp_path, reported):
+    r = build(dev_settings(tmp_path))
+    r.fake_voicelab.report_ranges = reported  # null ranges, or no keys at all
+    await r.pipeline.start()
+    async with client_for(r) as c:
+        conv, resp = await new_turn(c)
+        await settle(r)
+        got = (await c.get(f"/api/v1/conversations/{conv['id']}/turns/{resp.json()['id']}", headers=AUTH)).json()
+        timings = (await c.get(got["timings_url"], headers=AUTH)).json()
+    assert got["state"] == "ready" and timings["exact_sentences"] is True
+    await r.pipeline.stop()
