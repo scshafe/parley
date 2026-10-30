@@ -21,17 +21,13 @@ struct ConversationsView: View {
         List {
             if let errorText {
                 Section {
-                    Label(errorText, systemImage: "wifi.exclamationmark")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                    SuiBanner(text: errorText, tone: .warning, symbol: "wifi.exclamationmark")
                         .accessibilityIdentifier("conversationsError")
                 }
             }
             if searching {
                 if let searchError {
-                    Label(searchError, systemImage: "wifi.exclamationmark")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                    SuiBanner(text: searchError, tone: .warning, symbol: "wifi.exclamationmark")
                 }
                 ForEach(results) { c in
                     NavigationLink(value: ConversationRoute(id: c.id, title: c.displayTitle)) {
