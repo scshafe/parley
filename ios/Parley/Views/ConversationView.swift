@@ -24,6 +24,9 @@ struct ConversationView: View {
     @State private var sending = false
     @State private var pendingClientTurnID: String?
     @State private var errorText: String?
+    /// Counters that fire the send and play haptics.
+    @State private var sentCount = 0
+    @State private var playTaps = 0
     @State private var liveTitle: String?
     /// Who this view is, for the dictation it starts.
     @State private var dictationOwner = UUID()
@@ -46,21 +49,15 @@ struct ConversationView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 16) {
                     if turns.isEmpty {
-                        Text("Say something to start. Replies come back in your voice.")
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity)
+                        ContentUnavailableView("Say something to start", systemImage: "waveform",
+                                               description: Text("Replies come back in your voice."))
                             .padding(.top, 40)
                     }
                     ForEach(turns) { turn in
                         TurnRow(turn: turn, isLive: live.turnID == turn.id, isLivePlaying: live.isPlaying,
-                                onPlay: { path.append(ReaderRoute(turn: turn)) },
-                                onLive: { toggleLive(turn) })
+                                onPlay: { playTaps += 1; path.append(ReaderRoute(turn: turn)) },
+                                onLive: { playTaps += 1; toggleLive(turn) })
                         .id(turn.id)
-                    }
-                    if let errorText {
-                        SuiToneLabel(errorText, tone: .danger)
-                            .font(.footnote)
-                            .accessibilityIdentifier("conversationError")
                     }
                 }
                 .padding()
@@ -79,6 +76,10 @@ struct ConversationView: View {
                 composer
             }
         }
+        .suiToast($errorText)
+        .suiHaptic(.error, trigger: errorText)
+        .suiHaptic(.sent, trigger: sentCount)
+        .suiHaptic(.play, trigger: playTaps)
         .navigationTitle(liveTitle ?? title)
         .navigationBarTitleDisplayMode(.inline)
         // Reconnects when the relay, the sign-in or its access token changes,
@@ -242,6 +243,7 @@ struct ConversationView: View {
             pendingClientTurnID = nil
             draft = ""
             errorText = nil
+            sentCount += 1
             merge(turn)
         } catch {
             errorText = error.localizedDescription

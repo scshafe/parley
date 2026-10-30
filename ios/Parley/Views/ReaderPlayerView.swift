@@ -12,6 +12,7 @@ struct ReaderPlayerView: View {
     @State private var timings: Timings?
     @State private var tokens: [ReaderToken] = []
     @State private var loadError: String?
+    @State private var playTaps = 0
 
     private var text: String { turn.replyText ?? "" }
     private var isCurrent: Bool { player.turnID == turn.id }
@@ -44,6 +45,8 @@ struct ReaderPlayerView: View {
             }
         }
         .safeAreaBar(edge: .bottom) { controls }
+        .suiHaptic(.play, trigger: playTaps)
+        .suiHaptic(.error, trigger: loadError)
         .navigationTitle("Reply")
         .navigationBarTitleDisplayMode(.inline)
         .task { await prepare() }
@@ -75,7 +78,7 @@ struct ReaderPlayerView: View {
     private var controls: some View {
         VStack(spacing: 10) {
             if let loadError {
-                SuiToneLabel(loadError, tone: .danger).font(.footnote).accessibilityIdentifier("readerError")
+                SuiBanner(text: loadError).accessibilityIdentifier("readerError")
             }
             let duration = max(1, isCurrent ? player.durationMs : (turn.audio?.durationMs ?? 1))
             Slider(value: Binding(
@@ -98,7 +101,7 @@ struct ReaderPlayerView: View {
             HStack(spacing: 36) {
                 Button { player.skip(seconds: -10) } label: { Image(systemName: "gobackward.10") }
                     .accessibilityLabel("Back 10 seconds")
-                Button { player.toggle() } label: {
+                Button { playTaps += 1; player.toggle() } label: {
                     Image(systemName: player.state.isPlaying && isCurrent ? "pause.fill" : "play.fill")
                 }
                 .buttonStyle(.borderedProminent)

@@ -28,6 +28,7 @@ struct LoginView: View {
             .frame(maxWidth: .infinity)
         }
         .scrollDismissesKeyboard(.interactively)
+        .suiHaptic(.error, trigger: errorText)
         .background(Color(.systemBackground))
         .onAppear {
             if urlText.isEmpty { urlText = model.relayURLString }
@@ -74,11 +75,8 @@ struct LoginView: View {
                 .accessibilityLabel("Relay address")
                 .accessibilityIdentifier("loginRelayURL")
             if let errorText {
-                Label(errorText, systemImage: "exclamationmark.triangle.fill")
-                    .font(.footnote)
-                    .foregroundStyle(SuiTone.danger.color)
+                SuiBanner(text: errorText, symbol: "exclamationmark.triangle.fill")
                     .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityElement(children: .combine)
                     .accessibilityIdentifier("loginError")
             }
             Button(action: start) {
