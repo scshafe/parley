@@ -75,7 +75,7 @@ struct ReaderPlayerView: View {
     private var controls: some View {
         VStack(spacing: 10) {
             if let loadError {
-                Text(loadError).font(.footnote).foregroundStyle(.red).accessibilityIdentifier("readerError")
+                SuiToneLabel(loadError, tone: .danger).font(.footnote).accessibilityIdentifier("readerError")
             }
             let duration = max(1, isCurrent ? player.durationMs : (turn.audio?.durationMs ?? 1))
             Slider(value: Binding(

@@ -58,9 +58,8 @@ struct ConversationView: View {
                         .id(turn.id)
                     }
                     if let errorText {
-                        Text(errorText)
+                        SuiToneLabel(errorText, tone: .danger)
                             .font(.footnote)
-                            .foregroundStyle(.red)
                             .accessibilityIdentifier("conversationError")
                     }
                 }
@@ -109,7 +108,7 @@ struct ConversationView: View {
         HStack(spacing: 10) {
             Image(systemName: "waveform")
                 .font(.title3)
-                .foregroundStyle(.red)
+                .foregroundStyle(SuiTone.danger.color)
                 .symbolEffect(.variableColor.iterative, isActive: dictation.isListening)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 1) {
@@ -188,7 +187,7 @@ struct ConversationView: View {
             .buttonStyle(.bordered)
             .buttonBorderShape(.circle)
             .controlSize(.large)
-            .tint(isMyDictation ? .red : .accentColor)
+            .tint(isMyDictation ? SuiTone.danger.color : .accentColor)
             .disabled(sending || (dictation.isActive && !isMyDictation))
             .accessibilityLabel(isMyDictation ? "Stop dictation" : "Dictate")
             .accessibilityIdentifier("micButton")
@@ -359,9 +358,8 @@ struct TurnRow: View {
                     Text("Thinking…").foregroundStyle(.secondary)
                 }
                 if let error = turn.error {
-                    Text(error.detail.isEmpty ? error.code : error.detail)
+                    SuiToneLabel(error.detail.isEmpty ? error.code : error.detail, tone: .danger)
                         .font(.footnote)
-                        .foregroundStyle(.red)
                 }
             }
             .padding(10)

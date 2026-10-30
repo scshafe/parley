@@ -76,7 +76,7 @@ struct LoginView: View {
             if let errorText {
                 Label(errorText, systemImage: "exclamationmark.triangle.fill")
                     .font(.footnote)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(SuiTone.danger.color)
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityElement(children: .combine)
                     .accessibilityIdentifier("loginError")
