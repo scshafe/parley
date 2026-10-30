@@ -43,7 +43,7 @@ struct SettingsView: View {
                     .disabled(checking || urlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .accessibilityIdentifier("checkConnection")
                     if let urlProblem {
-                        Text(urlProblem).font(.footnote).foregroundStyle(.red)
+                        SuiToneLabel(urlProblem, tone: .danger).font(.footnote)
                             .accessibilityIdentifier("relayProblem")
                     }
                     if let checkResult {

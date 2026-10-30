@@ -168,8 +168,10 @@ struct TurnStateBadge: View {
     var body: some View {
         HStack(spacing: 4) {
             switch state {
-            case .thinking, .speaking:
-                ProgressView().controlSize(.mini)
+            case .thinking:
+                Image(systemName: "ellipsis")
+            case .speaking:
+                Image(systemName: "waveform")
             case .ready:
                 Image(systemName: "speaker.wave.2.fill")
             case .failed:
@@ -184,10 +186,10 @@ struct TurnStateBadge: View {
 
     private var color: Color {
         switch state {
-        case .thinking: return .secondary
-        case .speaking: return .orange
-        case .ready: return .accentColor
-        case .failed: return .red
+        case .thinking: return SuiTone.neutral.color
+        case .speaking: return SuiTone.warning.color
+        case .ready: return SuiTone.info.color
+        case .failed: return SuiTone.danger.color
         }
     }
 }
