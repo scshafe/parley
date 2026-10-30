@@ -20,32 +20,30 @@ struct ReaderPlayerView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 20) {
-                        FlowLayout(lineSpacing: 6) {
-                            ForEach(tokens) { token in
-                                tokenView(token)
-                                    .id(token.id)
-                                    .layoutValue(key: LineBreakAfter.self, value: token.breaksLine)
-                            }
-                        }
-                        .accessibilityElement(children: .contain)
-                        .accessibilityIdentifier("readerText")
-                        if let attachment = turn.attachment {
-                            AttachmentView(text: attachment)
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    FlowLayout(lineSpacing: 6) {
+                        ForEach(tokens) { token in
+                            tokenView(token)
+                                .id(token.id)
+                                .layoutValue(key: LineBreakAfter.self, value: token.breaksLine)
                         }
                     }
-                    .padding()
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("readerText")
+                    if let attachment = turn.attachment {
+                        AttachmentView(text: attachment)
+                    }
                 }
-                .onChange(of: position.word) { _, word in
-                    guard let word, let token = tokens.first(where: { $0.word == word }) else { return }
-                    withAnimation(.easeInOut(duration: 0.3)) { proxy.scrollTo(token.id, anchor: .center) }
-                }
+                .padding()
             }
-            controls
+            .onChange(of: position.word) { _, word in
+                guard let word, let token = tokens.first(where: { $0.word == word }) else { return }
+                withAnimation(.easeInOut(duration: 0.3)) { proxy.scrollTo(token.id, anchor: .center) }
+            }
         }
+        .safeAreaBar(edge: .bottom) { controls }
         .navigationTitle("Reply")
         .navigationBarTitleDisplayMode(.inline)
         .task { await prepare() }
@@ -101,9 +99,11 @@ struct ReaderPlayerView: View {
                 Button { player.skip(seconds: -10) } label: { Image(systemName: "gobackward.10") }
                     .accessibilityLabel("Back 10 seconds")
                 Button { player.toggle() } label: {
-                    Image(systemName: player.state.isPlaying && isCurrent ? "pause.circle.fill" : "play.circle.fill")
-                        .font(.system(size: 54))
+                    Image(systemName: player.state.isPlaying && isCurrent ? "pause.fill" : "play.fill")
                 }
+                .buttonStyle(.borderedProminent)
+                .buttonBorderShape(.circle)
+                .controlSize(.extraLarge)
                 .accessibilityLabel(player.state.isPlaying && isCurrent ? "Pause" : "Play")
                 .accessibilityIdentifier("playPauseButton")
                 .disabled(!isCurrent)
@@ -120,7 +120,6 @@ struct ReaderPlayerView: View {
             .font(.title2)
         }
         .padding()
-        .background(.bar)
     }
 
     private var statusLine: String {

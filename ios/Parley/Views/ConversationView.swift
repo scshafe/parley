@@ -74,7 +74,7 @@ struct ConversationView: View {
                 if let id = turns.last?.id { withAnimation { proxy.scrollTo(id, anchor: .bottom) } }
             }
         }
-        .safeAreaInset(edge: .bottom) {
+        .safeAreaBar(edge: .bottom) {
             VStack(spacing: 0) {
                 if isMyDictation { listeningBar }
                 composer
@@ -127,7 +127,6 @@ struct ConversationView: View {
         }
         .padding(.horizontal)
         .padding(.vertical, 8)
-        .background(.bar)
     }
 
     private var listeningTitle: String {
@@ -178,33 +177,42 @@ struct ConversationView: View {
         Task { await send() }
     }
 
+    /// The composer floats over the conversation in the system's bottom bar
+    /// (safeAreaBar), so iOS 26 gives it the glass; the field and the content
+    /// stay plain. The buttons size with Dynamic Type through controlSize.
     private var composer: some View {
         HStack(alignment: .bottom, spacing: 8) {
             Button(action: micTapped) {
-                Image(systemName: isMyDictation ? "stop.circle.fill" : "mic.circle")
-                    .font(.title)
-                    .foregroundStyle(isMyDictation ? Color.red : Color.accentColor)
+                Image(systemName: isMyDictation ? "stop.fill" : "mic.fill")
             }
+            .buttonStyle(.bordered)
+            .buttonBorderShape(.circle)
+            .controlSize(.large)
+            .tint(isMyDictation ? .red : .accentColor)
             .disabled(sending || (dictation.isActive && !isMyDictation))
             .accessibilityLabel(isMyDictation ? "Stop dictation" : "Dictate")
             .accessibilityIdentifier("micButton")
             TextField("Message", text: $draft, axis: .vertical)
                 .lineLimit(1...6)
-                .textFieldStyle(.roundedBorder)
                 .focused($composerFocused)
                 .submitLabel(.send)
                 .disabled(isMyDictation)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(.fill.tertiary, in: .rect(cornerRadius: 20))
                 .accessibilityIdentifier("composerField")
             Button(action: sendTapped) {
-                Image(systemName: "arrow.up.circle.fill").font(.title)
+                Image(systemName: "arrow.up")
             }
+            .buttonStyle(.borderedProminent)
+            .buttonBorderShape(.circle)
+            .controlSize(.large)
             .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || sending)
             .accessibilityLabel("Send")
             .accessibilityIdentifier("sendButton")
         }
         .padding(.horizontal)
         .padding(.vertical, 8)
-        .background(.bar)
     }
 
     // MARK: Sending
